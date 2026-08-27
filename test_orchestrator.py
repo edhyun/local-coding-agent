@@ -51,6 +51,21 @@ class TestSlugify(unittest.TestCase):
         )
 
 
+class TestTaskHash(unittest.TestCase):
+    def test_same_task_same_hash(self):
+        task = "Add a one-line docstring to the top of council/config.py"
+        self.assertEqual(orchestrator.task_hash(task), orchestrator.task_hash(task))
+
+    def test_different_tasks_that_share_a_slugified_prefix_get_different_hashes(self):
+        """The actual bug found live (2026-08-27): two different tasks
+        whose first 40 chars are identical must not collide on branch
+        name."""
+        task_a = "Add a one-line docstring to the top of council/config.py explaining what it configures."
+        task_b = "Add a one-line docstring to the top of council/observability.py explaining what it does."
+        self.assertEqual(orchestrator.slugify(task_a), orchestrator.slugify(task_b))
+        self.assertNotEqual(orchestrator.task_hash(task_a), orchestrator.task_hash(task_b))
+
+
 class TestPermissionProfiles(unittest.TestCase):
     def setUp(self):
         self.repo = make_scratch_repo()

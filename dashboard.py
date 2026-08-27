@@ -105,6 +105,16 @@ PAGE = """<!doctype html>
   #submit-bar button { background: #1c3352; border-color: #2c4a72; color: #7fb2ff; font-weight: 600; }
   #submit-bar button:disabled { opacity: 0.4; cursor: not-allowed; }
   #submit-bar label { font-size: 12px; color: #9a9dab; display: flex; align-items: center; gap: 4px; }
+  #model-bar {
+    padding: 0 18px 10px; border-bottom: 1px solid #2a2c34; background: #17181e;
+    display: flex; gap: 14px; flex-wrap: wrap;
+  }
+  .model-group { display: flex; gap: 12px; }
+  .model-group label { font-size: 11px; color: #7c7f8a; display: flex; align-items: center; gap: 4px; }
+  .model-group select {
+    background: #0f1014; border: 1px solid #2a2c34; color: #d8dade;
+    padding: 4px 6px; border-radius: 4px; font-family: inherit; font-size: 11px;
+  }
   #submit-msg { padding: 0 18px; font-size: 12px; min-height: 18px; }
   #submit-msg.err { color: #ff8686; }
   #submit-msg.ok { color: #7bd99a; }
@@ -151,6 +161,28 @@ PAGE = """<!doctype html>
   <input type="text" id="goal-input" placeholder="Describe the task or goal...">
   <label><input type="checkbox" id="push-checkbox"> push if it passes</label>
   <button id="submit-btn">Submit</button>
+</div>
+<div id="model-bar">
+  <div id="model-agent" class="model-group">
+    <label>model: <select id="model-agent-select">
+      <option value="__MODEL_INTERACTIVE__">__MODEL_INTERACTIVE__ (fast)</option>
+      <option value="__MODEL_QUEUED__">__MODEL_QUEUED__ (reliable)</option>
+    </select></label>
+  </div>
+  <div id="model-chief" class="model-group" style="display:none">
+    <label>Engineer: <select id="model-eng-select">
+      <option value="__MODEL_INTERACTIVE__">__MODEL_INTERACTIVE__ (fast)</option>
+      <option value="__MODEL_QUEUED__">__MODEL_QUEUED__ (reliable)</option>
+    </select></label>
+    <label>QA: <select id="model-qa-select">
+      <option value="__MODEL_INTERACTIVE__">__MODEL_INTERACTIVE__ (fast)</option>
+      <option value="__MODEL_QUEUED__" selected>__MODEL_QUEUED__ (reliable)</option>
+    </select></label>
+    <label>PM: <select id="model-pm-select">
+      <option value="__MODEL_INTERACTIVE__">__MODEL_INTERACTIVE__ (fast)</option>
+      <option value="__MODEL_QUEUED__" selected>__MODEL_QUEUED__ (reliable)</option>
+    </select></label>
+  </div>
 </div>
 <div id="submit-msg"></div>
 <div id="active-banner"><span class="dot"></span><span id="active-text">Idle - nothing running</span></div>
@@ -302,16 +334,30 @@ function showMsg(text, cls) {
   el.className = cls || '';
 }
 
+document.getElementById('mode-select').addEventListener('change', () => {
+  const mode = document.getElementById('mode-select').value;
+  document.getElementById('model-agent').style.display = mode === 'agent' ? 'flex' : 'none';
+  document.getElementById('model-chief').style.display = mode === 'chief' ? 'flex' : 'none';
+});
+
 document.getElementById('submit-btn').addEventListener('click', async () => {
   const goal = document.getElementById('goal-input').value.trim();
   const mode = document.getElementById('mode-select').value;
   const push = document.getElementById('push-checkbox').checked;
   if (!goal) { showMsg('Enter a goal first.', 'err'); return; }
   document.getElementById('submit-btn').disabled = true;
+  const payload = {goal, mode, push};
+  if (mode === 'chief') {
+    payload.engineer_model = document.getElementById('model-eng-select').value;
+    payload.qa_model = document.getElementById('model-qa-select').value;
+    payload.pm_model = document.getElementById('model-pm-select').value;
+  } else {
+    payload.model = document.getElementById('model-agent-select').value;
+  }
   try {
     const res = await fetch('/api/submit', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({goal, mode, push}),
+      body: JSON.stringify(payload),
     });
     const data = await res.json();
     if (!res.ok) { showMsg('Error: ' + (data.error || res.status), 'err'); document.getElementById('submit-btn').disabled = false; return; }
@@ -375,7 +421,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == "/":
-            body = PAGE.encode()
+            body = (PAGE
+                    .replace("__MODEL_INTERACTIVE__", orchestrator.MODEL_INTERACTIVE)
+                    .replace("__MODEL_QUEUED__", orchestrator.MODEL_QUEUED)
+                    ).encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -448,6 +497,21 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "mode must be 'agent' or 'chief'"}, status=400)
             return
 
+        # Per-role model override (2026-08-27, inspired by OpenExecutive's
+        # per-agent model dropdown) - validated against the two models this
+        # project actually knows how to run, so a bad value fails fast here
+        # with a clear error instead of a confusing downstream OpenCode one.
+        known_models = {orchestrator.MODEL_INTERACTIVE, orchestrator.MODEL_QUEUED}
+        model_fields = (["model"] if mode == "agent"
+                         else ["engineer_model", "qa_model", "pm_model"])
+        models = {}
+        for field in model_fields:
+            value = body.get(field) or orchestrator.MODEL_INTERACTIVE
+            if value not in known_models:
+                self._json({"error": f"{field} must be one of {sorted(known_models)}"}, status=400)
+                return
+            models[field] = value
+
         if not RUN_LOCK.acquire(blocking=False):
             self._json({"error": "another run is already in progress against "
                                   "this repo - wait for it to finish"}, status=409)
@@ -458,9 +522,12 @@ class Handler(BaseHTTPRequestHandler):
         def worker():
             try:
                 if mode == "chief":
-                    chief.run_council(repo, goal, model=orchestrator.MODEL_INTERACTIVE, push=push)
+                    chief.run_council(repo, goal, push=push,
+                                       engineer_model=models["engineer_model"],
+                                       qa_model=models["qa_model"],
+                                       pm_model=models["pm_model"])
                 else:
-                    orchestrator.run_task(repo, goal, push=push, model=orchestrator.MODEL_INTERACTIVE)
+                    orchestrator.run_task(repo, goal, push=push, model=models["model"])
             except orchestrator.MissingExecutable as e:
                 orchestrator.emit_dashboard_event(repo, {
                     "run_id": "dashboard-error", "role": "System", "round": 1,
@@ -477,7 +544,7 @@ class Handler(BaseHTTPRequestHandler):
                 RUN_LOCK.release()
 
         threading.Thread(target=worker, daemon=True).start()
-        self._json({"status": "started", "mode": mode, "goal": goal, "push": push})
+        self._json({"status": "started", "mode": mode, "goal": goal, "push": push, **models})
 
     def _handle_push(self, body: dict) -> None:
         branch = (body.get("branch") or "").strip()

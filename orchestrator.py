@@ -31,6 +31,7 @@ independent of whatever branch is checked out). No bootstrap commit is
 needed at all with this fix.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -135,6 +136,20 @@ def run(cmd, cwd, check=False):
 def slugify(task: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", task.lower()).strip("-")
     return slug[:40] or "task"
+
+
+def task_hash(task: str) -> str:
+    """Short, deterministic suffix so two different tasks that happen to
+    truncate to the same 40-char slug never collide on branch name. Found
+    live (2026-08-27): "Add a one-line docstring to the top of
+    council/config.py..." and the same phrasing for a different file both
+    slugify identically in their first 40 chars, so the second task's
+    `git checkout -b` hit the first task's already-existing branch and
+    crashed with git exit 128. Hashes the FULL task text (not the truncated
+    slug), so this fixes the actual root cause. The same task text
+    re-submitted still hashes to the same suffix - existing
+    resume-on-identical-retry behavior (D6) is unaffected."""
+    return hashlib.sha256(task.encode()).hexdigest()[:6]
 
 
 def git_status_short(repo: Path) -> str:
@@ -531,7 +546,7 @@ def run_task(repo: Path, task: str, push: bool = False, model: str = MODEL_INTER
     got as far as touching a branch."""
     repo = repo.resolve()
     slug = slugify(task)
-    branch = f"agent/{slug}"
+    branch = f"agent/{slug}-{task_hash(task)}"
     base_branch = current_branch(repo)
     run_id = run_id or f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{slug}"
 

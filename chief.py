@@ -139,11 +139,23 @@ def run_review(repo: Path, branch: str, role: str, prompt: str, model: str,
     return verdict
 
 
-def run_council(repo: Path, goal: str, model: str = MODEL_INTERACTIVE, push: bool = False) -> dict:
+def run_council(repo: Path, goal: str, model: str = MODEL_INTERACTIVE, push: bool = False,
+                 engineer_model: str | None = None, qa_model: str | None = None,
+                 pm_model: str | None = None) -> dict:
     """The fixed Engineer -> QA -> PM -> synthesis pipeline, with one bounded
     revision round. Returns a report dict; never raises for a normal
     REQUEST_CHANGES/escalation outcome (only for MissingExecutable, which
-    callers already handle the same way orchestrator.py's repl does)."""
+    callers already handle the same way orchestrator.py's repl does).
+
+    Per-role model override (2026-08-27, inspired by OpenExecutive's
+    per-agent model dropdown): engineer_model/qa_model/pm_model each default
+    to `model` when omitted, so every existing caller (repl(), main()) that
+    only ever passed `model=` keeps its exact old behavior - uniform model
+    across all three roles. Only the dashboard's submit form passes distinct
+    values today."""
+    engineer_model = engineer_model or model
+    qa_model = qa_model or model
+    pm_model = pm_model or model
     repo = repo.resolve()
     base_branch = current_branch(repo)
     ensure_git_exclude(repo)
@@ -156,8 +168,8 @@ def run_council(repo: Path, goal: str, model: str = MODEL_INTERACTIVE, push: boo
     # from task text, which is exactly what this project's design refuses to
     # do everywhere else (D7). Said plainly so it isn't mistaken for smart
     # routing that silently isn't there (found confusing 2026-08-27).
-    print(f"\n=== Chief: sending goal to Engineer ===\n{goal}")
-    eng_result = run_task(repo, goal, push=False, model=model, run_id=run_id, round_num=1)
+    print(f"\n=== Chief: sending goal to Engineer ({engineer_model}) ===\n{goal}")
+    eng_result = run_task(repo, goal, push=False, model=engineer_model, run_id=run_id, round_num=1)
 
     if eng_result["exit_code"] != 0:
         print(f"\n=== Chief synthesis: NO CODE CHANGES at Engineer stage "
@@ -174,13 +186,13 @@ def run_council(repo: Path, goal: str, model: str = MODEL_INTERACTIVE, push: boo
         qa_verdict = run_review(
             repo, branch, "QA",
             QA_PROMPT.format(task=task_for_review, base_branch=base_branch),
-            model, run_id=run_id, round_num=attempt,
+            qa_model, run_id=run_id, round_num=attempt,
         )
         pm_verdict = run_review(
             repo, branch, "PM",
             PM_PROMPT.format(task=task_for_review, base_branch=base_branch,
                               qa_verdict_raw=qa_verdict["raw"]),
-            model, run_id=run_id, round_num=attempt,
+            pm_model, run_id=run_id, round_num=attempt,
         )
 
         # Return to the engineer's branch - reviewers may have left it
@@ -247,7 +259,7 @@ def run_council(repo: Path, goal: str, model: str = MODEL_INTERACTIVE, push: boo
         for line in feedback:
             print(f"  - {line}")
         run(["git", "checkout", branch], cwd=repo)
-        eng_result = run_task(repo, revision_task, push=False, model=model,
+        eng_result = run_task(repo, revision_task, push=False, model=engineer_model,
                                run_id=run_id, round_num=attempt + 1)
         task_for_review = revision_task
         if eng_result["exit_code"] != 0:
