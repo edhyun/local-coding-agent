@@ -61,10 +61,20 @@ MODEL_QUEUED = "lmstudio/qwen3.8-27b-mlx"
 # extra, not a new default for anything.
 MODEL_QWEN32B = "ollama/qwen3:32b-q8_0"
 
+# Real user feedback (2026-08-27): classify_intent() and the QUESTION path
+# in handle_goal() were both using whatever model the caller picked for
+# CODING work (MODEL_INTERACTIVE - a coder-specialized model) - wrong tool
+# for "hello" or a one-word CODE/QUESTION classification, which need
+# neither coding skill nor a 30B model. qwen3:8b is smaller, general-
+# purpose, and already installed. Classification and general Q&A now
+# always use this, decoupled entirely from whatever model the user picked
+# for the actual build.
+MODEL_ASSISTANT = "ollama/qwen3:8b"
+
 # Every model the dashboard's dropdowns and _handle_submit's validation
 # know about. Add a model here (and only here) to make it selectable
 # everywhere at once, instead of updating multiple hardcoded option lists.
-AVAILABLE_MODELS = [MODEL_INTERACTIVE, MODEL_QUEUED, MODEL_QWEN32B]
+AVAILABLE_MODELS = [MODEL_INTERACTIVE, MODEL_QUEUED, MODEL_QWEN32B, MODEL_ASSISTANT]
 
 OPENCODE_PERMISSION_CONFIG = {
     "$schema": "https://opencode.ai/config.json",
@@ -334,7 +344,8 @@ def print_event_live(event: dict) -> None:
 
 
 def invoke_opencode(repo: Path, task: str, model: str, role: str = "Engineer",
-                     run_id: str | None = None, round_num: int = 1) -> dict:
+                     run_id: str | None = None, round_num: int = 1,
+                     display_task: str | None = None) -> dict:
     """D7: fresh process per attempt, --format json for a parseable event
     stream, no --auto (D8 relies on the project-local permission config
     instead). Streams events live via print_event_live as they arrive
@@ -357,9 +368,16 @@ def invoke_opencode(repo: Path, task: str, model: str, role: str = "Engineer",
     env["PWD"] = str(repo)
     env.pop("OLDPWD", None)
     if run_id:
+        # display_task lets a caller show the user's actual words in the
+        # UI ("hello") while sending the model a longer, augmented prompt
+        # (e.g. handle_goal's "answer using only this repo's files"
+        # scoping addendum) - found live (2026-08-27): without this, the
+        # dashboard's "task:" line showed the whole internal addendum
+        # verbatim, which read as confusing, irrelevant noise for a
+        # one-word input.
         emit_dashboard_event(repo, {
             "run_id": run_id, "role": role, "round": round_num,
-            "kind": "start", "task": task, "model": model,
+            "kind": "start", "task": display_task or task, "model": model,
         })
     try:
         proc = subprocess.Popen(
@@ -629,18 +647,27 @@ PROVIDER_ENDPOINTS = {
 }
 
 
+OLLAMA_NATIVE_CHAT_ENDPOINT = "http://127.0.0.1:11434/api/chat"
+
+
 def classify_intent(task: str, model: str) -> str:
-    """Returns "CODE" or "QUESTION". A plain one-shot completion call
-    directly against the model's own OpenAI-compatible endpoint - not
-    OpenCode's agentic tool-use loop, since classification needs no tools
-    and going through OpenCode would spend a whole process spin-up on a
-    one-word answer. Any failure (unknown provider, network error,
+    """Returns "CODE" or "QUESTION". A plain one-shot completion call -
+    not OpenCode's agentic tool-use loop, since classification needs no
+    tools and going through OpenCode would spend a whole process spin-up
+    on a one-word answer. Any failure (unknown provider, network error,
     unparseable response) returns "CODE" - fails toward the existing,
-    already-verified pipeline rather than a new, less-tested path."""
+    already-verified pipeline rather than a new, less-tested path.
+
+    Ollama gets its own branch using the NATIVE /api/chat endpoint with
+    "think": false, not the OpenAI-compatible /v1/chat/completions used
+    for other providers. Found live (2026-08-27): MODEL_ASSISTANT
+    (qwen3:8b) is a reasoning model: the OpenAI-compatible endpoint
+    ignores "think", so with max_tokens=10 it spent the entire budget on
+    hidden reasoning tokens and returned empty content - "hello" silently
+    misclassified as CODE. Ollama's native endpoint actually honors
+    think: false, so the model answers directly instead of reasoning
+    first."""
     provider, _, real_model = model.partition("/")
-    endpoint = PROVIDER_ENDPOINTS.get(provider)
-    if not endpoint:
-        return "CODE"
     prompt = (
         "Reply with exactly one word, nothing else: CODE if the following "
         "task asks to write, modify, fix, or refactor code or files; "
@@ -649,19 +676,37 @@ def classify_intent(task: str, model: str) -> str:
         "intended.\n\nTask: " + task
     )
     try:
-        req = urllib.request.Request(
-            endpoint,
-            data=json.dumps({
-                "model": real_model,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 10,
-                "temperature": 0,
-            }).encode(),
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read())
-        answer = data["choices"][0]["message"]["content"].strip().upper()
+        if provider == "ollama":
+            req = urllib.request.Request(
+                OLLAMA_NATIVE_CHAT_ENDPOINT,
+                data=json.dumps({
+                    "model": real_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "think": False,
+                    "stream": False,
+                }).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read())
+            answer = data["message"]["content"].strip().upper()
+        else:
+            endpoint = PROVIDER_ENDPOINTS.get(provider)
+            if not endpoint:
+                return "CODE"
+            req = urllib.request.Request(
+                endpoint,
+                data=json.dumps({
+                    "model": real_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 10,
+                    "temperature": 0,
+                }).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read())
+            answer = data["choices"][0]["message"]["content"].strip().upper()
         return "QUESTION" if answer.startswith("QUESTION") else "CODE"
     except (urllib.error.URLError, OSError, KeyError, IndexError, json.JSONDecodeError):
         return "CODE"
@@ -691,11 +736,20 @@ def handle_goal(repo: Path, task: str, model: str, push: bool = False,
     "Engineer" in the terminal/dashboard, making a real routing fix look
     like it hadn't done anything. Now always labeled "Assistant" here,
     distinct from the code-change roles, so a working classification is
-    visibly different, not just internally different."""
+    visibly different, not just internally different.
+
+    Also found live (2026-08-27, real user question - "why does the
+    assistant use the coder model?"): classification and this QUESTION
+    path both used to run on whatever model the caller picked for CODING
+    (`model`, e.g. MODEL_INTERACTIVE - a coder-specialized 30B model) -
+    the wrong tool for "hello" or a one-word CODE/QUESTION classification,
+    neither of which need coding skill. Both now always use
+    MODEL_ASSISTANT (smaller, general-purpose), independent of whatever
+    model the CODE path below will use."""
     repo = repo.resolve()
     ensure_git_exclude(repo)
     ensure_agent_instructions_override(repo)
-    intent = classify_intent(task, model)
+    intent = classify_intent(task, MODEL_ASSISTANT)
     if intent == "QUESTION":
         run_id = run_id or f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{slugify(task)}"
         print(f"Routed as a question, not a code change - answering directly "
@@ -709,12 +763,18 @@ def handle_goal(repo: Path, task: str, model: str, push: bool = False,
         # derailed the model into "debugging" that dump instead of
         # answering. Reducing the chance it wanders there at all is cheaper
         # than trying to make a bad answer graceful after the fact.
+        #
+        # display_task=task (below) keeps this addendum out of the
+        # dashboard's "task:" line - found live the same day: showing the
+        # whole augmented prompt for a one-word "hello" read as confusing,
+        # irrelevant noise the user never typed.
         scoped_task = (
             f"{task}\n\n(Answer using only this repository's own files, at "
             f"relative paths under the current directory. Do not reference "
             f"or search any path outside this repository.)"
         )
-        invoke_opencode(repo, scoped_task, model, role="Assistant", run_id=run_id, round_num=round_num)
+        invoke_opencode(repo, scoped_task, MODEL_ASSISTANT, role="Assistant",
+                         run_id=run_id, round_num=round_num, display_task=task)
         emit_dashboard_event(repo, {"run_id": run_id, "role": "Assistant", "round": round_num,
                                      "kind": "end", "status": "ANSWERED"})
         append_log(repo, {"task": task, "status": "ANSWERED",

@@ -287,8 +287,13 @@ class TestClassifyIntent(unittest.TestCase):
                 "CODE",
             )
 
-    def test_question_classification_parsed(self):
-        response = json.dumps({"choices": [{"message": {"content": "QUESTION"}}]}).encode()
+    def test_question_classification_parsed_ollama_native_shape(self):
+        # Ollama uses the native /api/chat response shape ({"message":
+        # {"content": ...}}), not the OpenAI-compatible {"choices": [...]}
+        # shape - found live 2026-08-27 when a test using the wrong shape
+        # would have masked the real bug (qwen3:8b's reasoning tokens
+        # eating the OpenAI-compatible endpoint's whole max_tokens budget).
+        response = json.dumps({"message": {"content": "QUESTION"}}).encode()
 
         class FakeResp:
             def __enter__(self):
@@ -305,6 +310,51 @@ class TestClassifyIntent(unittest.TestCase):
                 orchestrator.classify_intent("hello", "ollama/qwen3-coder:30b"),
                 "QUESTION",
             )
+
+    def test_question_classification_parsed_openai_compatible_shape(self):
+        # Non-Ollama providers (e.g. lmstudio) go through the OpenAI-
+        # compatible {"choices": [...]} shape, a genuinely different code
+        # path from the Ollama-native one above since the fix.
+        response = json.dumps({"choices": [{"message": {"content": "QUESTION"}}]}).encode()
+
+        class FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return response
+
+        with unittest.mock.patch("orchestrator.urllib.request.urlopen", return_value=FakeResp()):
+            self.assertEqual(
+                orchestrator.classify_intent("hello", "lmstudio/qwen3.8-27b-mlx"),
+                "QUESTION",
+            )
+
+    def test_ollama_request_uses_native_endpoint_with_think_false(self):
+        captured = {}
+
+        class FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return json.dumps({"message": {"content": "CODE"}}).encode()
+
+        def fake_urlopen(req, timeout=30):
+            captured["url"] = req.full_url
+            captured["body"] = json.loads(req.data)
+            return FakeResp()
+
+        with unittest.mock.patch("orchestrator.urllib.request.urlopen", side_effect=fake_urlopen):
+            orchestrator.classify_intent("hello", "ollama/qwen3:8b")
+        self.assertEqual(captured["url"], orchestrator.OLLAMA_NATIVE_CHAT_ENDPOINT)
+        self.assertEqual(captured["body"]["think"], False)
 
 
 if __name__ == "__main__":

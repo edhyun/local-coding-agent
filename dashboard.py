@@ -178,8 +178,8 @@ PAGE = """<!doctype html>
 </header>
 <div id="submit-bar">
   <select id="mode-select">
-    <option value="agent">Implement only (fast, no review)</option>
-    <option value="chief">Implement + review (slower, QA/PM must approve)</option>
+    <option value="agent">Build (fast, no review)</option>
+    <option value="chief">General (team review: Engineer + QA + PM)</option>
   </select>
   <textarea id="goal-input" rows="1" placeholder="Describe the task or goal... (Enter to submit, Shift+Enter for a new line)"></textarea>
   <label title="Once QA/PM (and any custom reviewer) all say APPROVE, push the branch to GitHub and open a draft PR automatically - the same thing the 'Push + open PR' button in History does, just pre-approved before you see the result. Leave unchecked to review it yourself first and push manually.">
@@ -188,10 +188,11 @@ PAGE = """<!doctype html>
   <button id="submit-btn">Submit</button>
 </div>
 <div id="mode-caption">
-  Both verify success by git diff, never by the model's own claim. "Implement only" is one pass -
-  you review the result yourself. "Implement + review" adds two more passes (QA, then PM) that
-  must both say APPROVE before it's done, with one bounded revision round if either objects -
-  slower, but catches problems before you'd otherwise have to notice them.
+  Both verify success by git diff, never by the model's own claim, and both answer plain
+  questions directly (no branch, no commit) instead of forcing them through a build. "Build" is
+  one pass - you review the result yourself. "General" adds two more passes (QA, then PM) that
+  must both say APPROVE before a build is done, with one bounded revision round if either
+  objects - slower, but catches problems before you'd otherwise have to notice them.
 </div>
 <div id="model-bar">
   <div id="model-agent" class="model-group">
@@ -299,8 +300,8 @@ function applyEvent(e) {
   const rec = roleBlock(run.el, e.run_id, e.role);
   const roundEl = run.el.querySelector('.round');
   roundEl.textContent = 'attempt ' + (e.round || 1) + ' of ≤2';
-  roundEl.title = 'Attempt 1: first try. Attempt 2 only happens in "Implement + review" '
-                + 'mode, if QA/PM (or a custom reviewer) request changes - never more than 2.';
+  roundEl.title = 'Attempt 1: first try. Attempt 2 only happens in "General" mode, if '
+                + 'QA/PM (or a custom reviewer) request changes - never more than 2.';
   const activeKey = e.run_id + ':' + e.role;
   if (e.kind === 'start') {
     rec.el.classList.add('role-active');
