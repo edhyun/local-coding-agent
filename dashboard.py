@@ -42,6 +42,7 @@ import argparse
 import html
 import json
 import threading
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -83,14 +84,18 @@ PAGE = """<!doctype html>
     padding: 8px 18px; border-bottom: 1px solid #2a2c34; background: #17181e;
     display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
   }
-  #workspace-path {
-    flex: 1; min-width: 280px; background: #0f1014; border: 1px solid #2a2c34;
-    color: #d8dade; padding: 6px 9px; border-radius: 4px; font-family: inherit; font-size: 12px;
+  #workspace-label { font-size: 11px; color: #7c7f8a; }
+  #workspace-options { display: flex; gap: 6px; flex-wrap: wrap; }
+  #workspace-loading { font-size: 11px; color: #6a6d78; }
+  #workspace-empty { font-size: 11px; color: #6a6d78; font-style: italic; }
+  .workspace-chip {
+    background: #0f1014; border: 1px solid #2a2c34; color: #9a9dab;
+    padding: 4px 10px; border-radius: 12px; font-family: inherit; font-size: 11px; cursor: pointer;
   }
-  #workspace-bar label { font-size: 11px; color: #9a9dab; display: flex; align-items: center; gap: 4px; }
-  #workspace-go {
+  .workspace-chip:hover { border-color: #3a3d47; color: #d8dade; }
+  #workspace-new-btn {
     background: #1c3352; border: 1px solid #2c4a72; color: #7fb2ff;
-    padding: 6px 12px; border-radius: 4px; font-family: inherit; font-size: 12px; cursor: pointer;
+    padding: 5px 12px; border-radius: 12px; font-family: inherit; font-size: 11px; cursor: pointer;
   }
   #workspace-msg { font-size: 11px; }
   #workspace-msg.err { color: #ff8686; }
@@ -216,9 +221,9 @@ PAGE = """<!doctype html>
   </span>
 </header>
 <div id="workspace-bar" style="display:none">
-  <input type="text" id="workspace-path" placeholder="/absolute/path/to/a/project">
-  <label><input type="checkbox" id="workspace-create"> create new (git init + empty repo)</label>
-  <button type="button" id="workspace-go">Go</button>
+  <span id="workspace-label" title="Most recently active sibling projects in the same parent folder">switch to (recent):</span>
+  <span id="workspace-options"><span id="workspace-loading">loading...</span></span>
+  <button type="button" id="workspace-new-btn">+ New workspace</button>
   <span id="workspace-msg"></span>
 </div>
 <div id="submit-bar">
@@ -589,30 +594,77 @@ document.getElementById('hist-list').addEventListener('click', async (ev) => {
 })();
 
 // Create/switch workspace (direct user request - "allow user to create a
-// new workspace, to start from scratch"). A full page reload after a
-// successful switch is deliberate, not a shortcut: the server now serves
-// a different repo entirely, so the event-offset counter, history, and
-// every "which repo am I looking at" assumption need to start fresh - a
-// reload gets all of that correct for free instead of hand-rewriting
-// client state to match a repo the page never loaded for.
-document.getElementById('workspace-toggle').addEventListener('click', () => {
-  const bar = document.getElementById('workspace-bar');
-  bar.style.display = bar.style.display === 'none' ? 'flex' : 'none';
-});
-document.getElementById('workspace-go').addEventListener('click', async () => {
-  const path = document.getElementById('workspace-path').value.trim();
-  const create = document.getElementById('workspace-create').checked;
-  const msg = document.getElementById('workspace-msg');
-  if (!path) { msg.textContent = 'Enter a path first.'; msg.className = 'err'; return; }
-  msg.textContent = 'Working...'; msg.className = '';
+// new workspace, to start from scratch," then a follow-up: "don't ask
+// user to put the folder path manually - scan it and add options as
+// clickable... everything should be clickable buttons"). No text input
+// anywhere in this flow: switching means clicking a scanned sibling
+// project's button, creating means clicking "+ New workspace" with no
+// fields at all (the server auto-names it).
+//
+// A full page reload after a successful switch is deliberate, not a
+// shortcut: the server now serves a different repo entirely, so the
+// event-offset counter, history, and every "which repo am I looking at"
+// assumption need to start fresh - a reload gets all of that correct for
+// free instead of hand-rewriting client state to match a repo the page
+// never loaded for.
+async function goToWorkspace(path, msgEl) {
+  msgEl.textContent = 'Working...'; msgEl.className = '';
   try {
     const res = await fetch('/api/workspace', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({path, create}),
+      body: JSON.stringify({path}),
+    });
+    const data = await res.json();
+    if (!res.ok) { msgEl.textContent = 'Error: ' + (data.error || res.status); msgEl.className = 'err'; return; }
+    msgEl.textContent = 'Switched to ' + data.repo + ' - reloading...'; msgEl.className = 'ok';
+    setTimeout(() => window.location.reload(), 600);
+  } catch (e) {
+    msgEl.textContent = 'Request failed: ' + e; msgEl.className = 'err';
+  }
+}
+
+async function loadWorkspaceOptions() {
+  const container = document.getElementById('workspace-options');
+  container.innerHTML = '<span id="workspace-loading">loading...</span>';
+  try {
+    const res = await fetch('/api/workspaces');
+    const data = await res.json();
+    if (!data.options || data.options.length === 0) {
+      container.innerHTML = '<span id="workspace-empty">no other project found in ' + data.base_dir + '</span>';
+      return;
+    }
+    container.innerHTML = '';
+    data.options.forEach(opt => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'workspace-chip';
+      btn.textContent = opt.name;
+      btn.title = opt.path;
+      btn.addEventListener('click', () => goToWorkspace(opt.path, document.getElementById('workspace-msg')));
+      container.appendChild(btn);
+    });
+  } catch (e) {
+    container.innerHTML = '<span id="workspace-empty">could not scan for projects</span>';
+  }
+}
+
+document.getElementById('workspace-toggle').addEventListener('click', () => {
+  const bar = document.getElementById('workspace-bar');
+  const opening = bar.style.display === 'none';
+  bar.style.display = opening ? 'flex' : 'none';
+  if (opening) loadWorkspaceOptions();
+});
+
+document.getElementById('workspace-new-btn').addEventListener('click', async () => {
+  const msg = document.getElementById('workspace-msg');
+  msg.textContent = 'Creating...'; msg.className = '';
+  try {
+    const res = await fetch('/api/workspace/new', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}',
     });
     const data = await res.json();
     if (!res.ok) { msg.textContent = 'Error: ' + (data.error || res.status); msg.className = 'err'; return; }
-    msg.textContent = 'Switched to ' + data.repo + ' - reloading...'; msg.className = 'ok';
+    msg.textContent = 'Created ' + data.repo + ' - reloading...'; msg.className = 'ok';
     setTimeout(() => window.location.reload(), 600);
   } catch (e) {
     msg.textContent = 'Request failed: ' + e; msg.className = 'err';
@@ -711,6 +763,14 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"entries": entries})
             return
 
+        if parsed.path == "/api/workspaces":
+            self._json({
+                "base_dir": str(self.repo.parent),
+                "current": str(self.repo),
+                "options": self._scan_sibling_workspaces(),
+            })
+            return
+
         self._json({"error": "not found"}, status=404)
 
     def do_POST(self):
@@ -729,6 +789,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/workspace":
             self._handle_workspace(body)
+            return
+        if parsed.path == "/api/workspace/new":
+            self._handle_workspace_new(body)
             return
         self._json({"error": "not found"}, status=404)
 
@@ -859,24 +922,69 @@ class Handler(BaseHTTPRequestHandler):
         threading.Thread(target=worker, daemon=True).start()
         self._json({"status": "started", "branch": branch})
 
+    MAX_WORKSPACE_OPTIONS = 12
+
+    def _scan_sibling_workspaces(self) -> list[dict]:
+        """Direct user request: "don't ask users to put the folder path
+        manually. You scan it and add options as clickable." Scans the
+        CURRENT repo's own parent directory (wherever it happens to live -
+        for this project, ~/workspace/) for sibling directories that are
+        themselves git repos, excluding the currently-active one. This is
+        a best-effort convenience scan, not a filesystem browser - it only
+        looks one directory up and one level deep, on purpose: a real file
+        picker is a much bigger feature than "click a sibling project
+        instead of typing its path".
+
+        Sorted by most-recently-active first and capped at
+        MAX_WORKSPACE_OPTIONS - found live (2026-08-27): this user's real
+        ~/workspace/ has 57 sibling git repos. A flat alphabetical list
+        that long defeats "a few clicks", and a text filter isn't an
+        option given the explicit "no typing" requirement - recency is the
+        one sort that needs no user input at all and matches what "which
+        project was I just in" actually means. Uses .git/HEAD's mtime
+        (updates on every commit/checkout) as a fast recency proxy - avoids
+        running `git log` once per repo, which would mean 57 subprocess
+        spawns just to open this panel."""
+        base = self.repo.parent
+        options = []
+        try:
+            for entry in sorted(base.iterdir()):
+                if not entry.is_dir() or entry.name.startswith("."):
+                    continue
+                resolved = entry.resolve()
+                if resolved == self.repo.resolve():
+                    continue
+                git_head = entry / ".git" / "HEAD"
+                if not git_head.exists():
+                    continue
+                try:
+                    mtime = git_head.stat().st_mtime
+                except OSError:
+                    mtime = 0
+                options.append({"name": entry.name, "path": str(resolved), "_mtime": mtime})
+            options.sort(key=lambda o: o["_mtime"], reverse=True)
+            options = options[: self.MAX_WORKSPACE_OPTIONS]
+            for o in options:
+                del o["_mtime"]
+        except OSError:
+            pass  # base dir unreadable for some reason - just show no options, not an error
+        return options
+
     def _handle_workspace(self, body: dict) -> None:
-        """Direct user request: "allow user to create a new workspace, to
-        start from scratch." Synchronous (not a background thread, unlike
-        submit/push) - mkdir + git init + one commit is fast, and the
-        frontend needs a definite answer before it reloads the page for the
-        new repo. Refuses while a run is in progress against the CURRENT
-        workspace, same RUN_LOCK guard as submit/push - switching out from
-        under a running task would leave it writing into a repo the UI no
-        longer shows."""
+        """Switches to an EXISTING repo. The path comes from a button built
+        from _scan_sibling_workspaces()'s server-provided list, not user
+        typing - see the module note above. Synchronous (not a background
+        thread, unlike submit/push): this is fast, and the frontend needs a
+        definite answer before it reloads the page for the new repo.
+        Refuses while a run is in progress against the CURRENT workspace,
+        same RUN_LOCK guard as submit/push."""
         path_str = (body.get("path") or "").strip()
-        create = bool(body.get("create", False))
         if not path_str:
             self._json({"error": "path is required"}, status=400)
             return
         new_repo = Path(path_str).expanduser()
         if not new_repo.is_absolute():
-            self._json({"error": "path must be absolute, e.g. /Users/you/projects/new-thing"},
-                        status=400)
+            self._json({"error": "path must be absolute"}, status=400)
             return
 
         if not RUN_LOCK.acquire(blocking=False):
@@ -884,27 +992,44 @@ class Handler(BaseHTTPRequestHandler):
                                   "wait for it to finish before switching"}, status=409)
             return
         try:
-            if create:
-                if new_repo.exists() and any(new_repo.iterdir()):
-                    self._json({"error": f"{new_repo} already exists and is not empty"},
-                                status=400)
-                    return
-                new_repo.mkdir(parents=True, exist_ok=True)
-                orchestrator.run(["git", "init", "-q"], cwd=new_repo, check=True)
-                (new_repo / "README.md").write_text(f"# {new_repo.name}\n")
-                orchestrator.run(["git", "add", "-A"], cwd=new_repo, check=True)
-                orchestrator.run(["git", "commit", "-q", "-m", "Initial commit"],
-                                  cwd=new_repo, check=True)
-            else:
-                if not new_repo.is_dir():
-                    self._json({"error": f"{new_repo} does not exist - check "
-                                          "\"create new\" to start a fresh workspace there"},
-                                status=400)
-                    return
-                if not (new_repo / ".git").exists():
-                    self._json({"error": f"{new_repo} is not a git repository - check "
-                                          "\"create new\" to initialize it"}, status=400)
-                    return
+            if not new_repo.is_dir():
+                self._json({"error": f"{new_repo} does not exist"}, status=400)
+                return
+            if not (new_repo / ".git").exists():
+                self._json({"error": f"{new_repo} is not a git repository"}, status=400)
+                return
+            Handler.repo = new_repo.resolve()
+            self._json({"status": "ok", "repo": str(Handler.repo)})
+        except Exception as e:  # noqa: BLE001 - surface the real filesystem error, don't swallow it
+            self._json({"error": str(e)}, status=500)
+        finally:
+            RUN_LOCK.release()
+
+    def _handle_workspace_new(self, body: dict) -> None:
+        """Creates a brand new workspace with NO typed input at all - direct
+        user request: "add an option to create a new folder... do not ask
+        users to type something manually." Auto-names it with a timestamp
+        (collision-proof without needing to scan for the next free number)
+        inside the same parent directory _scan_sibling_workspaces() looks
+        at, so it shows up as a sibling next time. mkdir + git init + one
+        real commit (README.md), same as before - a fresh repo needs at
+        least one commit for the rest of this project's branch-based
+        workflow (checkout_task_branch etc.) to have something to branch
+        from."""
+        if not RUN_LOCK.acquire(blocking=False):
+            self._json({"error": "a run is in progress against the current workspace - "
+                                  "wait for it to finish before creating a new one"}, status=409)
+            return
+        try:
+            base = self.repo.parent
+            name = "workspace-" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            new_repo = base / name
+            new_repo.mkdir(parents=True, exist_ok=False)
+            orchestrator.run(["git", "init", "-q"], cwd=new_repo, check=True)
+            (new_repo / "README.md").write_text(f"# {name}\n")
+            orchestrator.run(["git", "add", "-A"], cwd=new_repo, check=True)
+            orchestrator.run(["git", "commit", "-q", "-m", "Initial commit"],
+                              cwd=new_repo, check=True)
             Handler.repo = new_repo.resolve()
             self._json({"status": "ok", "repo": str(Handler.repo)})
         except Exception as e:  # noqa: BLE001 - surface the real git/filesystem error, don't swallow it
