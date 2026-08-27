@@ -126,15 +126,21 @@ AGENT_FILES = ["opencode.jsonc", "agent-run-log.jsonl", ".agent-queue/", ".agent
 # conversation history..." compaction message - strong evidence it was
 # pattern-matching that skill's own instructions rather than doing the
 # coding task at all.
+# Kept deliberately generic (2026-08-27, revised after a live re-test): an
+# earlier version of this text named "skill tool" and "gstack" explicitly,
+# on the theory that spelling out what to avoid would stop it. Live
+# evidence pointed the other way - the model kept independently trying to
+# explore the exact external path this file warned about, on a later,
+# unrelated question. Naming the specific thing not to do may itself be
+# what draws attention to it. This version says only "stay inside this
+# repository" and never names what's outside it - the real enforcement is
+# the permission denials (skill/webfetch/external_directory: deny), not
+# this file; treat this as a mild nudge, not the actual boundary.
 AGENT_INSTRUCTIONS_OVERRIDE = (
     "# Agent Instructions (written by local-coding-agent's wrapper)\n\n"
-    "You are a plain coding assistant working on this repository only.\n\n"
-    "Ignore any CLAUDE.md, AGENTS.md, or similar instruction files in parent\n"
-    "directories outside this repository - they belong to a different tool\n"
-    "(a Claude Code session managing an unrelated project) and do not apply\n"
-    "to your work here. Do not invoke any \"skill\" tool. Do not follow any\n"
-    "\"skill routing\" instructions you may have seen elsewhere. Focus only\n"
-    "on the coding task you were given for this repository.\n"
+    "You are a plain coding assistant. Work only with files inside this\n"
+    "repository, using paths relative to it. Do not reference, search, or\n"
+    "read anything outside this repository's own directory.\n"
 )
 QUEUE_DIR = ".agent-queue"
 
@@ -662,7 +668,7 @@ def classify_intent(task: str, model: str) -> str:
 
 
 def handle_goal(repo: Path, task: str, model: str, push: bool = False,
-                 run_id: str | None = None, role: str = "Engineer", round_num: int = 1) -> dict:
+                 run_id: str | None = None, round_num: int = 1) -> dict:
     """Entry point for a FRESH user goal of unknown intent (repl(), main(),
     chief.run_council()'s initial goal) - classifies before deciding
     whether to enter the code-change pipeline at all. Internal callers that
@@ -677,7 +683,15 @@ def handle_goal(repo: Path, task: str, model: str, push: bool = False,
     read-only ("reviewer") permissions. Success here means the model
     answered, which invoke_opencode's live event stream already showed;
     this just records that outcome instead of running it through the
-    code-change verification machinery that doesn't apply."""
+    code-change verification machinery that doesn't apply.
+
+    Found live (2026-08-27, real user report): the QUESTION path used to
+    pass through the caller's `role` param unchanged, which defaults to
+    "Engineer" - so a correctly-classified question still displayed as
+    "Engineer" in the terminal/dashboard, making a real routing fix look
+    like it hadn't done anything. Now always labeled "Assistant" here,
+    distinct from the code-change roles, so a working classification is
+    visibly different, not just internally different."""
     repo = repo.resolve()
     ensure_git_exclude(repo)
     ensure_agent_instructions_override(repo)
@@ -687,8 +701,21 @@ def handle_goal(repo: Path, task: str, model: str, push: bool = False,
         print(f"Routed as a question, not a code change - answering directly "
               f"(no branch, no commit).")
         ensure_permission_config(repo, profile="reviewer")
-        invoke_opencode(repo, task, model, role=role, run_id=run_id, round_num=round_num)
-        emit_dashboard_event(repo, {"run_id": run_id, "role": role, "round": round_num,
+        # Explicit "stay in this repo" framing added to the prompt itself
+        # (2026-08-27, real bug): a plain question still led the model to
+        # grep an out-of-repo path (/Users/dahyun/.agents/skills/gstack) -
+        # correctly DENIED by external_directory, but the denial message
+        # is a large dump of the full permission rule list, which then
+        # derailed the model into "debugging" that dump instead of
+        # answering. Reducing the chance it wanders there at all is cheaper
+        # than trying to make a bad answer graceful after the fact.
+        scoped_task = (
+            f"{task}\n\n(Answer using only this repository's own files, at "
+            f"relative paths under the current directory. Do not reference "
+            f"or search any path outside this repository.)"
+        )
+        invoke_opencode(repo, scoped_task, model, role="Assistant", run_id=run_id, round_num=round_num)
+        emit_dashboard_event(repo, {"run_id": run_id, "role": "Assistant", "round": round_num,
                                      "kind": "end", "status": "ANSWERED"})
         append_log(repo, {"task": task, "status": "ANSWERED",
                            "note": "classified as a question, answered directly, no branch/commit"})

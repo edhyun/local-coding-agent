@@ -146,6 +146,7 @@ PAGE = """<!doctype html>
   .role-Engineer { background: #1c3352; color: #7fb2ff; }
   .role-QA { background: #3a2e14; color: #e5b567; }
   .role-PM { background: #163a24; color: #7bd99a; }
+  .role-Assistant { background: #2a2c34; color: #b7bac4; }
   .role-Custom { background: #2e1c3a; color: #c99fe0; }
   .timer { font-size: 10px; color: #6a6d78; margin-left: 6px; }
   .role-active { background: rgba(255,255,255,0.03); }
@@ -255,7 +256,7 @@ setInterval(() => {
   updateBanner();
 }, 1000);
 
-const KNOWN_ROLES = ['Engineer', 'QA', 'PM'];
+const KNOWN_ROLES = ['Engineer', 'QA', 'PM', 'Assistant'];
 
 function roleBlock(runEl, run_id, role) {
   const key = run_id + ':' + role;
