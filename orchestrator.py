@@ -599,8 +599,15 @@ def run_task(repo: Path, task: str, push: bool = False, model: str = MODEL_INTER
         # applies to CODE CHANGES - it has no routing or intent detection
         # (never will, by design: guessing intent from task text is exactly
         # the kind of untrusted narration this project refuses to rely on).
-        # The internal status stays "FAILED" (dashboard/log consistency);
-        # only the human-facing message changes.
+        # Found 2026-08-27 (real user session, second half of the same
+        # confusion the message-only fix above didn't fully close): the
+        # dashboard renders this status value directly ("Engineer finished:
+        # " + status), so leaving the internal enum as "FAILED" meant the
+        # word "FAILED" still showed up verbatim for a plain "hello" prompt
+        # that never had anything fail - only the printed terminal message
+        # was fixed before, not the value other consumers (dashboard, log)
+        # actually display. Renamed at the source instead of patching each
+        # display site separately.
         print("NO CODE CHANGES (verified via git diff, not exit code) - this "
               "doesn't necessarily mean something went wrong. The model's "
               "answer, if any, is in the text above. If your goal was a "
@@ -608,11 +615,11 @@ def run_task(repo: Path, task: str, push: bool = False, model: str = MODEL_INTER
               "the right tool for it - run `opencode run \"<question>\"` "
               "directly instead.")
         append_log(repo, {
-            "task": task, "branch": branch, "status": "FAILED",
+            "task": task, "branch": branch, "status": "NO_CHANGES",
             "opencode_returncode": result["returncode"],
             "note": "no git changes detected",
         })
-        return finish({"exit_code": 1, "status": "FAILED", "branch": branch, "base_branch": base_branch})
+        return finish({"exit_code": 1, "status": "NO_CHANGES", "branch": branch, "base_branch": base_branch})
 
     print(f"Changes detected:\n{diff}")
 

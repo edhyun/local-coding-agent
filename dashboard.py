@@ -105,6 +105,10 @@ PAGE = """<!doctype html>
   #submit-bar button { background: #1c3352; border-color: #2c4a72; color: #7fb2ff; font-weight: 600; }
   #submit-bar button:disabled { opacity: 0.4; cursor: not-allowed; }
   #submit-bar label { font-size: 12px; color: #9a9dab; display: flex; align-items: center; gap: 4px; }
+  #mode-caption {
+    padding: 0 18px 10px; font-size: 11px; color: #6a6d78; background: #17181e;
+    border-bottom: 1px solid #2a2c34; line-height: 1.5;
+  }
   #model-bar {
     padding: 0 18px 10px; border-bottom: 1px solid #2a2c34; background: #17181e;
     display: flex; gap: 14px; flex-wrap: wrap;
@@ -136,8 +140,9 @@ PAGE = """<!doctype html>
   .hist-item { padding: 8px 0; border-bottom: 1px solid #23252c; }
   .hist-status { font-weight: 700; font-size: 11px; padding: 1px 6px; border-radius: 3px; }
   .st-APPROVED, .st-COMMITTED, .st-PR_OPENED { background: #163a24; color: #7bd99a; }
-  .st-FAILED, .st-BLOCKED_GATE_FAIL, .st-PR_FAILED, .st-NEEDS_HUMAN { background: #3a1616; color: #ff8686; }
+  .st-BLOCKED_GATE_FAIL, .st-PR_FAILED, .st-NEEDS_HUMAN, .st-REVISION_FAILED, .st-ENGINEER_BLOCKED { background: #3a1616; color: #ff8686; }
   .st-ESCALATED, .st-REFUSED_DIRTY { background: #3a2e14; color: #e5b567; }
+  .st-NO_CHANGES, .st-ENGINEER_NO_CHANGES { background: #23252c; color: #9a9dab; }
   .hist-task { color: #d8dade; margin-top: 3px; }
   .hist-time { color: #6a6d78; font-size: 11px; margin-top: 3px; }
   .push-btn {
@@ -155,12 +160,18 @@ PAGE = """<!doctype html>
 </header>
 <div id="submit-bar">
   <select id="mode-select">
-    <option value="agent">Agent only (orchestrator.py)</option>
-    <option value="chief">Engineer/QA/PM council (chief.py)</option>
+    <option value="agent">Implement only (fast, no review)</option>
+    <option value="chief">Implement + review (slower, QA/PM must approve)</option>
   </select>
   <input type="text" id="goal-input" placeholder="Describe the task or goal...">
   <label><input type="checkbox" id="push-checkbox"> push if it passes</label>
   <button id="submit-btn">Submit</button>
+</div>
+<div id="mode-caption">
+  Both verify success by git diff, never by the model's own claim. "Implement only" is one pass -
+  you review the result yourself. "Implement + review" adds two more passes (QA, then PM) that
+  must both say APPROVE before it's done, with one bounded revision round if either objects -
+  slower, but catches problems before you'd otherwise have to notice them.
 </div>
 <div id="model-bar">
   <div id="model-agent" class="model-group">

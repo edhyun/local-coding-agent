@@ -177,7 +177,14 @@ def run_council(repo: Path, goal: str, model: str = MODEL_INTERACTIVE, push: boo
               f"question rather than a change request, the model's answer is "
               f"in the text above - the council is for code changes, not "
               f"general Q&A; try `opencode run \"<question>\"` directly for that. ===")
-        return {"status": "ENGINEER_FAILED", "engineer": eng_result}
+        # Same rename as orchestrator.py's NO_CHANGES (2026-08-27) - a
+        # benign no-diff outcome (e.g. "hello") is not the same situation as
+        # a real problem (dirty tree refused, or the safety gate failed),
+        # so this outer status keeps that distinction rather than lumping
+        # both under one alarming "FAILED" word.
+        outer_status = ("ENGINEER_NO_CHANGES" if eng_result["status"] == "NO_CHANGES"
+                         else "ENGINEER_BLOCKED")
+        return {"status": outer_status, "engineer": eng_result}
 
     branch = eng_result["branch"]
     task_for_review = goal
