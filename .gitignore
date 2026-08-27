@@ -1,0 +1,11 @@
+# Leftover local test/tooling artifacts - never meant to be published
+e2e-verify-repo/
+.gstack/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# macOS
+.DS_Store
