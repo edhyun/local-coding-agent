@@ -34,10 +34,15 @@ an issue and say so — that's the actual experiment.
   a `VERDICT: APPROVE` or `VERDICT: REQUEST_CHANGES: <reason>`. One bounded
   revision round if either objects, then it escalates to you rather than
   looping.
-- **`dashboard.py`** — a read-only local web page (`127.0.0.1` only, no
-  auth) that shows the above running live: streamed model output, per-role
-  status, and run history. You still submit tasks and approve pushes
-  through the terminal, never through the dashboard.
+- **`dashboard.py`** — a local web page (`127.0.0.1` only, no auth) that
+  shows the above running live (streamed model output, per-role status,
+  run history) and lets you submit a goal and approve a push from the page
+  itself. No auth means anything that can reach this port can trigger real
+  runs and pushes, not just read history - accepted here because the same
+  no-auth-on-localhost boundary already covers the terminal REPLs below;
+  this just gives that same trusted actor (you, on your machine) a second
+  way in. Every push still requires an explicit click, same gate as the
+  terminal's `--push` flag - nothing pushes automatically.
 
 ## Setup
 
@@ -67,7 +72,7 @@ packaged or pinned to specific versions yet:
 # The Engineer/QA/PM review pipeline
 ./chief-session.sh /path/to/some/repo
 
-# A read-only live monitor for either of the above (separate terminal)
+# A live monitor - and a second way to submit goals/approve pushes (separate terminal)
 ./dashboard-session.sh /path/to/some/repo
 ```
 

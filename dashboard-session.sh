@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Start or attach to the read-only web dashboard's tmux session for a repo.
+# Start or attach to the web dashboard's tmux session for a repo.
 #
 # Wrapped in tmux for the same reason as agent-session.sh/chief-session.sh -
-# consistent start/stop/attach muscle memory - even though the dashboard
-# itself takes no interactive input; attaching just shows the server's own
-# log lines (which are intentionally sparse, see dashboard.py's log_message
-# override) and Ctrl-C there stops the server, Ctrl-b d leaves it running.
+# consistent start/stop/attach muscle memory. Attaching shows the server's
+# own log lines (intentionally sparse, see dashboard.py's log_message
+# override), not the dashboard UI itself - actually submitting goals or
+# approving pushes happens in the browser page at the printed URL, not in
+# this terminal. Ctrl-C there stops the server, Ctrl-b d leaves it running.
 set -euo pipefail
 
 if [ $# -lt 1 ] || [ $# -gt 2 ]; then
