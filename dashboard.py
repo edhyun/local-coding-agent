@@ -54,6 +54,17 @@ PAGE = """<!doctype html>
   }
   header h1 { font-size: 15px; margin: 0; font-weight: 600; }
   header .repo { color: #7c7f8a; font-size: 12px; }
+  #active-banner {
+    padding: 8px 18px; background: #1b1c22; border-bottom: 1px solid #2a2c34;
+    font-size: 12px; color: #6a6d78; display: flex; align-items: center; gap: 8px;
+  }
+  #active-banner.live { color: #e5e7ee; }
+  #active-banner .dot {
+    width: 8px; height: 8px; border-radius: 50%; background: #3a3d47; flex-shrink: 0;
+  }
+  #active-banner.live .dot { background: #7bd99a; animation: pulse 1.2s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+  .model-tag { font-size: 10px; color: #6a6d78; margin-left: 6px; }
   #layout { display: flex; height: calc(100vh - 49px); }
   #feed, #history { overflow-y: auto; padding: 14px 18px; }
   #feed { flex: 2; border-right: 1px solid #2a2c34; }
@@ -69,7 +80,8 @@ PAGE = """<!doctype html>
   .role-Engineer { background: #1c3352; color: #7fb2ff; }
   .role-QA { background: #3a2e14; color: #e5b567; }
   .role-PM { background: #163a24; color: #7bd99a; }
-  .role-active .role-label { box-shadow: 0 0 0 1px currentColor; }
+  .role-active { background: rgba(255,255,255,0.03); }
+  .role-active .role-label { box-shadow: 0 0 0 1px currentColor; animation: pulse 1.2s infinite; }
   .line { padding: 1px 0; color: #b7bac4; white-space: pre-wrap; word-break: break-word; }
   .line.tool { color: #8b8ea0; }
   .line.err { color: #ff8686; }
@@ -89,6 +101,7 @@ PAGE = """<!doctype html>
   <h1>Chief of Staff - live monitor</h1>
   <span class="repo" id="repo-path"></span>
 </header>
+<div id="active-banner"><span class="dot"></span><span id="active-text">Idle - nothing running</span></div>
 <div id="layout">
   <div id="feed"><h2>Live feed (read-only)</h2><div id="runs"></div></div>
   <div id="history"><h2>History</h2><div id="hist-list"><div id="empty">No runs yet.</div></div></div>
@@ -96,15 +109,30 @@ PAGE = """<!doctype html>
 <script>
 let offset = 0;
 const runs = {}; // run_id -> { el, roles: { role -> {el, started, ended} } }
+const activeRoles = new Map(); // key -> { role, model }
+
+function updateBanner() {
+  const banner = document.getElementById('active-banner');
+  const text = document.getElementById('active-text');
+  if (activeRoles.size === 0) {
+    banner.classList.remove('live');
+    text.textContent = 'Idle - nothing running';
+    return;
+  }
+  banner.classList.add('live');
+  const parts = [...activeRoles.values()].map(v => v.role + ' (' + (v.model || 'unknown model') + ')');
+  text.textContent = 'Running: ' + parts.join(', ');
+}
 
 function roleBlock(runEl, run_id, role) {
   const key = run_id + ':' + role;
   if (runs[run_id].roles[key]) return runs[run_id].roles[key];
   const el = document.createElement('div');
   el.className = 'role-block role-' + role;
-  el.innerHTML = '<span class="role-label role-' + role + '">' + role + '</span><div class="lines"></div>';
+  el.innerHTML = '<span class="role-label role-' + role + '">' + role + '</span>' +
+                 '<span class="model-tag"></span><div class="lines"></div>';
   runEl.appendChild(el);
-  const rec = { el, lines: el.querySelector('.lines'), ended: false };
+  const rec = { el, lines: el.querySelector('.lines'), modelTag: el.querySelector('.model-tag'), ended: false };
   runs[run_id].roles[key] = rec;
   return rec;
 }
@@ -130,15 +158,19 @@ function applyEvent(e) {
   const run = runBlock(e.run_id);
   const rec = roleBlock(run.el, e.run_id, e.role);
   run.el.querySelector('.round').textContent = 'round ' + (e.round || 1);
+  const activeKey = e.run_id + ':' + e.role;
   if (e.kind === 'start') {
     rec.el.classList.add('role-active');
+    if (rec.modelTag) rec.modelTag.textContent = e.model ? ('· ' + e.model + ' · running') : '';
+    activeRoles.set(activeKey, { role: e.role, model: e.model });
+    updateBanner();
     addLine(rec, 'task: ' + e.task, 'tool');
   } else if (e.kind === 'opencode_event') {
     const ev = e.event || {};
     const part = ev.part || {};
     if (ev.type === 'text') {
       const t = (part.text || '').trim();
-      if (t) addLine(rec, t.slice(0, 300));
+      if (t) addLine(rec, t.slice(0, 2000));
     } else if (ev.type === 'tool_use') {
       const state = part.state || {};
       const tool = part.tool || '?';
@@ -152,6 +184,9 @@ function applyEvent(e) {
   } else if (e.kind === 'end') {
     rec.el.classList.remove('role-active');
     rec.ended = true;
+    activeRoles.delete(activeKey);
+    updateBanner();
+    if (rec.modelTag) rec.modelTag.textContent = rec.modelTag.textContent.replace('· running', '· done');
     const d = document.createElement('div');
     d.className = 'end-status';
     d.textContent = e.role + ' finished: ' + e.status;

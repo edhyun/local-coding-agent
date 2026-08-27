@@ -219,9 +219,16 @@ def print_event_live(event: dict) -> None:
     t = event.get("type")
     part = event.get("part", {})
     if t == "text":
+        # Found 2026-08-27 (real user session): a 200-char cap cut off the
+        # model's actual answer mid-word for a Q&A-style task, making a
+        # perfectly good response look like it just trailed into nothing -
+        # confusing on its own, and worse right before a "FAILED" line for a
+        # task that was never going to produce a git diff in the first place.
+        # 2000 is generous enough that a real answer isn't chopped; still
+        # capped so one pathological wall of text can't flood the terminal.
         text = part.get("text", "").strip()
         if text:
-            print(f"  · {text[:200]}")
+            print(f"  · {text[:2000]}")
     elif t == "tool_use":
         state = part.get("state", {})
         tool = part.get("tool", "?")
@@ -567,7 +574,24 @@ def run_task(repo: Path, task: str, push: bool = False, model: str = MODEL_INTER
         # D2 / D7: no escalation tier exists (T7). Exit code is not trusted -
         # "no changes" is the actual failure signal, regardless of what
         # OpenCode's process returned or what the model's text claimed.
-        print("FAILED: no changes produced (verified via git diff, not exit code).")
+        #
+        # Found 2026-08-27 (real user session): "FAILED" reads as an error
+        # even when nothing actually went wrong - it just means this specific
+        # task was never going to produce a git diff, most commonly because
+        # the task was a question ("scan the repo and understand what it
+        # is"), not a change request. This tool's entire value (D7's
+        # diff-verification, the safety gate, the review pipeline) only
+        # applies to CODE CHANGES - it has no routing or intent detection
+        # (never will, by design: guessing intent from task text is exactly
+        # the kind of untrusted narration this project refuses to rely on).
+        # The internal status stays "FAILED" (dashboard/log consistency);
+        # only the human-facing message changes.
+        print("NO CODE CHANGES (verified via git diff, not exit code) - this "
+              "doesn't necessarily mean something went wrong. The model's "
+              "answer, if any, is in the text above. If your goal was a "
+              "question rather than a change request, this wrapper isn't "
+              "the right tool for it - run `opencode run \"<question>\"` "
+              "directly instead.")
         append_log(repo, {
             "task": task, "branch": branch, "status": "FAILED",
             "opencode_returncode": result["returncode"],
@@ -661,6 +685,11 @@ def repl(repo: Path) -> None:
               f"run (crash-resume) - continuing them before taking new input.")
         process_queue(repo, model=MODEL_QUEUED)
 
+    print("This is for CODE CHANGES only - success is verified by git diff, "
+          "not by the model's answer. For a plain question, run "
+          "`opencode run \"<question>\"` directly instead; routed through "
+          "here it'll report no changes, which is correct but easy to "
+          "misread as an error.")
     print("Enter a task (add --push to open a PR on success), 'queue: t1 ; t2 ; ...' "
           "for a batch, or 'exit'.")
     while True:

@@ -149,12 +149,22 @@ def run_council(repo: Path, goal: str, model: str = MODEL_INTERACTIVE, push: boo
     ensure_git_exclude(repo)
     run_id = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{slugify(goal)}"
 
-    print(f"\n=== Chief: decomposing goal to Engineer ===\n{goal}")
+    # "Sending to Engineer" not "decomposing" - v1 has no actual
+    # decomposition/routing step (see module docstring). Every goal goes to
+    # Engineer first, unconditionally, because building an "is this a
+    # question or a change request" classifier means trusting a fuzzy guess
+    # from task text, which is exactly what this project's design refuses to
+    # do everywhere else (D7). Said plainly so it isn't mistaken for smart
+    # routing that silently isn't there (found confusing 2026-08-27).
+    print(f"\n=== Chief: sending goal to Engineer ===\n{goal}")
     eng_result = run_task(repo, goal, push=False, model=model, run_id=run_id, round_num=1)
 
     if eng_result["exit_code"] != 0:
-        print(f"\n=== Chief synthesis: FAILED at Engineer stage "
-              f"({eng_result['status']}) - nothing to review. ===")
+        print(f"\n=== Chief synthesis: NO CODE CHANGES at Engineer stage "
+              f"({eng_result['status']}) - nothing to review. If this was a "
+              f"question rather than a change request, the model's answer is "
+              f"in the text above - the council is for code changes, not "
+              f"general Q&A; try `opencode run \"<question>\"` directly for that. ===")
         return {"status": "ENGINEER_FAILED", "engineer": eng_result}
 
     branch = eng_result["branch"]
@@ -253,6 +263,11 @@ def repl(repo: Path) -> None:
     print(f"Chief of Staff - {repo}")
     print(f"Roster: Engineer, QA, PM (all {MODEL_INTERACTIVE}, role-prompted). "
           f"One bounded revision round; anything unclear escalates to you.")
+    print("This is for CODE CHANGES only - success is verified by git diff, "
+          "not by the model's answer. For a plain question ('what does this "
+          "repo do'), run `opencode run \"<question>\"` directly instead; "
+          "routed through here it'll report no changes, which is correct "
+          "but easy to misread as an error.")
     print("Enter a goal (add --push to open a PR once QA+PM approve), or 'exit'.")
     while True:
         try:
