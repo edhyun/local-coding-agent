@@ -10,6 +10,7 @@ live local model) is deliberately not covered here - see TODOS.md.
 
 import json
 import shutil
+import unittest.mock
 import subprocess
 import tempfile
 import unittest
@@ -265,6 +266,45 @@ class TestPrintEventLive(unittest.TestCase):
         # should simply produce no output, not raise
         out = self._capture({"type": "something_unknown"})
         self.assertEqual(out, "")
+
+
+class TestClassifyIntent(unittest.TestCase):
+    def test_unknown_provider_fails_toward_code(self):
+        """A wrong classification must fail toward the existing, already-
+        verified pipeline (CODE) rather than a new, less-tested path."""
+        self.assertEqual(
+            orchestrator.classify_intent("hello", "some-unknown-provider/model"),
+            "CODE",
+        )
+
+    def test_network_error_fails_toward_code(self):
+        with unittest.mock.patch(
+            "orchestrator.urllib.request.urlopen",
+            side_effect=orchestrator.urllib.error.URLError("connection refused"),
+        ):
+            self.assertEqual(
+                orchestrator.classify_intent("hello", "ollama/qwen3-coder:30b"),
+                "CODE",
+            )
+
+    def test_question_classification_parsed(self):
+        response = json.dumps({"choices": [{"message": {"content": "QUESTION"}}]}).encode()
+
+        class FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return response
+
+        with unittest.mock.patch("orchestrator.urllib.request.urlopen", return_value=FakeResp()):
+            self.assertEqual(
+                orchestrator.classify_intent("hello", "ollama/qwen3-coder:30b"),
+                "QUESTION",
+            )
 
 
 if __name__ == "__main__":

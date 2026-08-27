@@ -16,20 +16,20 @@ coordination" both argued against building the full 10-persona council in
 one shot):
   - Exactly 3 roles: Engineer (implements), QA (reviews the diff for
     correctness), PM (judges the result against the original goal in
-    plain, non-code terms). All three are the SAME local model
-    (MODEL_INTERACTIVE / MODEL_QUEUED from orchestrator.py), differentiated
-    only by role-prompt - not by giving each role a different model. Adding
-    model-per-role later is a config change, not a rewrite, if v1 proves
-    the pipeline is worth it.
-  - The "Chief" is NOT itself a model call in v1. The pipeline is fixed
-    (Engineer -> QA -> PM -> synthesis), not a dynamic goal-decomposition-
-    and-routing step, because a 3-role roster doesn't need a router yet -
-    a real Chief-style decompose-and-route step only earns its complexity
-    once there's more than one specialist per kind of work to choose
-    between. What "chief.py" actually contributes right now is the fixed
-    sequencing, the reviewer permission profile, verdict parsing, one
-    bounded revision loop, and the human approval gate before anything
-    external happens.
+    plain, non-code terms). Originally all three used the SAME local model,
+    differentiated only by role-prompt; per-role model override was added
+    2026-08-27 (dashboard exposes it), but the roles themselves are still
+    fixed at exactly these 3.
+  - The "Chief" still does not decompose a goal across multiple
+    specialists or pick which of several roles fits best - the pipeline is
+    fixed (Engineer -> QA -> PM -> synthesis) once a goal is confirmed to
+    be a code-change task. What was added 2026-08-27: a lightweight check
+    in orchestrator.handle_goal() decides whether a goal is a code change
+    at all before Engineer ever runs (see handle_goal's docstring) - this
+    is routing INTO the pipeline, not routing WITHIN it across specialists;
+    a real Chief-style decompose-and-route-across-specialists step still
+    only earns its complexity once there's more than one specialist per
+    kind of coding work to choose between.
   - Exactly one revision round if QA or PM request changes, then escalate
     to the human rather than looping - same "keep it simple, don't let
     coordination overhead multiply" reasoning that kept the original
@@ -60,8 +60,10 @@ from orchestrator import (
     append_log,
     current_branch,
     emit_dashboard_event,
+    ensure_agent_instructions_override,
     ensure_git_exclude,
     ensure_permission_config,
+    handle_goal,
     invoke_opencode,
     push_and_open_pr,
     run,
@@ -95,6 +97,28 @@ VERDICT: APPROVE
 or
 VERDICT: REQUEST_CHANGES: <specific reason, in plain terms>
 """
+
+
+def build_custom_reviewer_prompt(role_name: str, instructions: str, task: str, base_branch: str) -> str:
+    """User-defined reviewer roles (2026-08-27) - built directly with an
+    f-string rather than a two-stage .format() template (fill in
+    role_name/instructions, then task/base_branch) like QA_PROMPT/PM_PROMPT
+    use. A second .format() pass over already-substituted user text would
+    treat any literal "{" the user typed in their custom instructions as a
+    new placeholder and raise KeyError. Filling in everything in one pass
+    avoids that entirely."""
+    return (
+        f"You are a {role_name} reviewing a colleague's finished change before it ships. "
+        f"You did not write this code and have no stake in defending it.\n\n"
+        f"Original task: {task}\n\n"
+        f"Your specific review focus: {instructions}\n\n"
+        f"Run `git diff {base_branch}` to see exactly what changed on this branch, and "
+        f"inspect the affected files directly. Do not edit any files - you are reviewing only.\n\n"
+        f'End your reply with exactly one line starting with "VERDICT:" - either:\n'
+        f"VERDICT: APPROVE\n"
+        f"or\n"
+        f"VERDICT: REQUEST_CHANGES: <specific, actionable reason>\n"
+    )
 
 
 def parse_verdict(events: list) -> dict:
@@ -141,7 +165,7 @@ def run_review(repo: Path, branch: str, role: str, prompt: str, model: str,
 
 def run_council(repo: Path, goal: str, model: str = MODEL_INTERACTIVE, push: bool = False,
                  engineer_model: str | None = None, qa_model: str | None = None,
-                 pm_model: str | None = None) -> dict:
+                 pm_model: str | None = None, extra_reviewers: list[dict] | None = None) -> dict:
     """The fixed Engineer -> QA -> PM -> synthesis pipeline, with one bounded
     revision round. Returns a report dict; never raises for a normal
     REQUEST_CHANGES/escalation outcome (only for MissingExecutable, which
@@ -152,24 +176,52 @@ def run_council(repo: Path, goal: str, model: str = MODEL_INTERACTIVE, push: boo
     to `model` when omitted, so every existing caller (repl(), main()) that
     only ever passed `model=` keeps its exact old behavior - uniform model
     across all three roles. Only the dashboard's submit form passes distinct
-    values today."""
+    values today.
+
+    extra_reviewers (2026-08-27, direct user request: "I want to include a
+    UI/UX designer for frontend work"): optional list of
+    {"name": str, "instructions": str, "model": str} for user-defined
+    reviewer roles beyond QA/PM. Deliberately NOT a full dynamic N-role
+    roster system - CrewAI already does that at production scale (see the
+    office-hours session that shaped this project's scope), and building
+    a second one here would be exactly the kind of thing that design
+    session decided not to chase. This is the minimum that answers the
+    concrete ask: one or more extra reviewers, each independent (does not
+    see other reviewers' verdicts, unlike PM seeing QA's), each running
+    under the same read-only reviewer permission profile as QA/PM, each
+    contributing to the same approve/escalate/revise decision."""
     engineer_model = engineer_model or model
     qa_model = qa_model or model
     pm_model = pm_model or model
+    extra_reviewers = extra_reviewers or []
     repo = repo.resolve()
     base_branch = current_branch(repo)
     ensure_git_exclude(repo)
+    ensure_agent_instructions_override(repo)
     run_id = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{slugify(goal)}"
 
-    # "Sending to Engineer" not "decomposing" - v1 has no actual
-    # decomposition/routing step (see module docstring). Every goal goes to
-    # Engineer first, unconditionally, because building an "is this a
-    # question or a change request" classifier means trusting a fuzzy guess
-    # from task text, which is exactly what this project's design refuses to
-    # do everywhere else (D7). Said plainly so it isn't mistaken for smart
-    # routing that silently isn't there (found confusing 2026-08-27).
+    # "Sending to Engineer" not "decomposing" - v1 still has no goal
+    # decomposition/multi-specialist routing (see module docstring): every
+    # coding goal that clears the intent check below goes to Engineer,
+    # unconditionally, not to whichever of several specialists might fit
+    # best. What changed 2026-08-27 (real user feedback, asked twice): a
+    # lightweight low-stakes check now runs BEFORE this, in
+    # handle_goal(), to decide whether to enter the code-change pipeline
+    # at all - that's a routing decision (does this need Engineer touching
+    # code), not a safety decision (D7's git-diff verification is
+    # unchanged once inside the pipeline), so it doesn't conflict with
+    # this project's refusal to guess intent for anything safety-critical.
     print(f"\n=== Chief: sending goal to Engineer ({engineer_model}) ===\n{goal}")
-    eng_result = run_task(repo, goal, push=False, model=engineer_model, run_id=run_id, round_num=1)
+    eng_result = handle_goal(repo, goal, model=engineer_model, push=False,
+                              run_id=run_id, round_num=1)
+
+    if eng_result["status"] == "ANSWERED":
+        print(f"\n=== Chief synthesis: ANSWERED - routed as a question, not a "
+              f"code change. Nothing to review (QA/PM review diffs; there is "
+              f"no diff). ===")
+        report = {"status": "ANSWERED", "engineer": eng_result}
+        append_log(repo, {"chief_report": report})
+        return report
 
     if eng_result["exit_code"] != 0:
         print(f"\n=== Chief synthesis: NO CODE CHANGES at Engineer stage "
@@ -201,13 +253,21 @@ def run_council(repo: Path, goal: str, model: str = MODEL_INTERACTIVE, push: boo
                               qa_verdict_raw=qa_verdict["raw"]),
             pm_model, run_id=run_id, round_num=attempt,
         )
+        extra_verdicts = []
+        for reviewer in extra_reviewers:
+            prompt = build_custom_reviewer_prompt(
+                reviewer["name"], reviewer["instructions"], task_for_review, base_branch)
+            v = run_review(repo, branch, reviewer["name"], prompt,
+                            reviewer.get("model") or model, run_id=run_id, round_num=attempt)
+            extra_verdicts.append((reviewer["name"], v))
 
         # Return to the engineer's branch - reviewers may have left it
         # checked out mid-inspection.
         run(["git", "checkout", branch], cwd=repo)
 
-        needs_changes = qa_verdict["verdict"] != "APPROVE" or pm_verdict["verdict"] != "APPROVE"
-        escalate = qa_verdict["verdict"] == "UNCLEAR" or pm_verdict["verdict"] == "UNCLEAR"
+        all_verdicts = [qa_verdict, pm_verdict] + [v for _, v in extra_verdicts]
+        needs_changes = any(v["verdict"] != "APPROVE" for v in all_verdicts)
+        escalate = any(v["verdict"] == "UNCLEAR" for v in all_verdicts)
 
         if not needs_changes:
             print(f"\n=== Chief synthesis: APPROVED after {attempt} round(s) "
@@ -215,6 +275,7 @@ def run_council(repo: Path, goal: str, model: str = MODEL_INTERACTIVE, push: boo
             report = {
                 "status": "APPROVED", "branch": branch, "rounds": attempt,
                 "engineer": eng_result, "qa": qa_verdict, "pm": pm_verdict,
+                "extra_reviewers": {name: v for name, v in extra_verdicts},
             }
             if push:
                 gate = eng_result.get("gate", {"status": "NO_TESTS"})
@@ -223,7 +284,7 @@ def run_council(repo: Path, goal: str, model: str = MODEL_INTERACTIVE, push: boo
                 report["pr_result"] = pr_result
                 print(f"PR: {pr_result}")
             else:
-                print(f"Branch {branch} approved by QA+PM, NOT pushed - "
+                print(f"Branch {branch} approved by all reviewers, NOT pushed - "
                       f"re-run with --push for a draft PR (explicit human gate).")
             append_log(repo, {"chief_report": {k: v for k, v in report.items() if k != "pr_result"}})
             return report
@@ -234,6 +295,7 @@ def run_council(repo: Path, goal: str, model: str = MODEL_INTERACTIVE, push: boo
             report = {
                 "status": "ESCALATED", "branch": branch, "rounds": attempt,
                 "engineer": eng_result, "qa": qa_verdict, "pm": pm_verdict,
+                "extra_reviewers": {name: v for name, v in extra_verdicts},
             }
             append_log(repo, {"chief_report": report})
             return report
@@ -245,6 +307,7 @@ def run_council(repo: Path, goal: str, model: str = MODEL_INTERACTIVE, push: boo
             report = {
                 "status": "NEEDS_HUMAN", "branch": branch, "rounds": attempt,
                 "engineer": eng_result, "qa": qa_verdict, "pm": pm_verdict,
+                "extra_reviewers": {name: v for name, v in extra_verdicts},
             }
             append_log(repo, {"chief_report": report})
             return report
@@ -258,6 +321,9 @@ def run_council(repo: Path, goal: str, model: str = MODEL_INTERACTIVE, push: boo
             feedback.append(f"QA requested changes: {qa_verdict.get('reason', '')}")
         if pm_verdict["verdict"] == "REQUEST_CHANGES":
             feedback.append(f"PM requested changes: {pm_verdict.get('reason', '')}")
+        for name, v in extra_verdicts:
+            if v["verdict"] == "REQUEST_CHANGES":
+                feedback.append(f"{name} requested changes: {v.get('reason', '')}")
         revision_task = (
             f"{goal}\n\nA reviewer asked for changes to your last attempt on this "
             f"branch:\n" + "\n".join(feedback)
@@ -279,6 +345,7 @@ def run_council(repo: Path, goal: str, model: str = MODEL_INTERACTIVE, push: boo
 def repl(repo: Path) -> None:
     repo = repo.resolve()
     ensure_git_exclude(repo)
+    ensure_agent_instructions_override(repo)
     print(f"Chief of Staff - {repo}")
     print(f"Roster: Engineer, QA, PM (all {MODEL_INTERACTIVE}, role-prompted). "
           f"One bounded revision round; anything unclear escalates to you.")

@@ -94,10 +94,11 @@ PAGE = """<!doctype html>
     padding: 10px 18px; border-bottom: 1px solid #2a2c34; background: #17181e;
     display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
   }
-  #submit-bar input[type=text] {
+  #submit-bar input[type=text], #goal-input {
     flex: 1; min-width: 240px; background: #0f1014; border: 1px solid #2a2c34;
     color: #d8dade; padding: 7px 10px; border-radius: 4px; font-family: inherit; font-size: 13px;
   }
+  #goal-input { resize: none; overflow-y: auto; max-height: 200px; line-height: 1.4; }
   #submit-bar select, #submit-bar button {
     background: #0f1014; border: 1px solid #2a2c34; color: #d8dade;
     padding: 7px 10px; border-radius: 4px; font-family: inherit; font-size: 12px; cursor: pointer;
@@ -119,6 +120,20 @@ PAGE = """<!doctype html>
     background: #0f1014; border: 1px solid #2a2c34; color: #d8dade;
     padding: 4px 6px; border-radius: 4px; font-family: inherit; font-size: 11px;
   }
+  #custom-role-bar {
+    padding: 8px 18px; border-bottom: 1px solid #2a2c34; background: #17181e;
+    display: flex; gap: 8px; flex-wrap: wrap;
+  }
+  #custom-role-bar input[type=text] {
+    background: #0f1014; border: 1px solid #2a2c34; color: #d8dade;
+    padding: 5px 8px; border-radius: 4px; font-family: inherit; font-size: 11px;
+  }
+  #custom-role-name { flex: 0 0 220px; }
+  #custom-role-instructions { flex: 1; min-width: 260px; }
+  #custom-role-bar select {
+    background: #0f1014; border: 1px solid #2a2c34; color: #d8dade;
+    padding: 5px 6px; border-radius: 4px; font-family: inherit; font-size: 11px;
+  }
   #submit-msg { padding: 0 18px; font-size: 12px; min-height: 18px; }
   #submit-msg.err { color: #ff8686; }
   #submit-msg.ok { color: #7bd99a; }
@@ -131,6 +146,8 @@ PAGE = """<!doctype html>
   .role-Engineer { background: #1c3352; color: #7fb2ff; }
   .role-QA { background: #3a2e14; color: #e5b567; }
   .role-PM { background: #163a24; color: #7bd99a; }
+  .role-Custom { background: #2e1c3a; color: #c99fe0; }
+  .timer { font-size: 10px; color: #6a6d78; margin-left: 6px; }
   .role-active { background: rgba(255,255,255,0.03); }
   .role-active .role-label { box-shadow: 0 0 0 1px currentColor; animation: pulse 1.2s infinite; }
   .line { padding: 1px 0; color: #b7bac4; white-space: pre-wrap; word-break: break-word; }
@@ -139,7 +156,7 @@ PAGE = """<!doctype html>
   .end-status { margin-top: 4px; font-size: 11px; color: #7c7f8a; }
   .hist-item { padding: 8px 0; border-bottom: 1px solid #23252c; }
   .hist-status { font-weight: 700; font-size: 11px; padding: 1px 6px; border-radius: 3px; }
-  .st-APPROVED, .st-COMMITTED, .st-PR_OPENED { background: #163a24; color: #7bd99a; }
+  .st-APPROVED, .st-COMMITTED, .st-PR_OPENED, .st-ANSWERED { background: #163a24; color: #7bd99a; }
   .st-BLOCKED_GATE_FAIL, .st-PR_FAILED, .st-NEEDS_HUMAN, .st-REVISION_FAILED, .st-ENGINEER_BLOCKED { background: #3a1616; color: #ff8686; }
   .st-ESCALATED, .st-REFUSED_DIRTY { background: #3a2e14; color: #e5b567; }
   .st-NO_CHANGES, .st-ENGINEER_NO_CHANGES { background: #23252c; color: #9a9dab; }
@@ -163,8 +180,10 @@ PAGE = """<!doctype html>
     <option value="agent">Implement only (fast, no review)</option>
     <option value="chief">Implement + review (slower, QA/PM must approve)</option>
   </select>
-  <input type="text" id="goal-input" placeholder="Describe the task or goal...">
-  <label><input type="checkbox" id="push-checkbox"> push if it passes</label>
+  <textarea id="goal-input" rows="1" placeholder="Describe the task or goal... (Enter to submit, Shift+Enter for a new line)"></textarea>
+  <label title="Once QA/PM (and any custom reviewer) all say APPROVE, push the branch to GitHub and open a draft PR automatically - the same thing the 'Push + open PR' button in History does, just pre-approved before you see the result. Leave unchecked to review it yourself first and push manually.">
+    <input type="checkbox" id="push-checkbox"> auto-push when approved
+  </label>
   <button id="submit-btn">Submit</button>
 </div>
 <div id="mode-caption">
@@ -175,25 +194,18 @@ PAGE = """<!doctype html>
 </div>
 <div id="model-bar">
   <div id="model-agent" class="model-group">
-    <label>model: <select id="model-agent-select">
-      <option value="__MODEL_INTERACTIVE__">__MODEL_INTERACTIVE__ (fast)</option>
-      <option value="__MODEL_QUEUED__">__MODEL_QUEUED__ (reliable)</option>
-    </select></label>
+    <label>model: <select id="model-agent-select">__MODEL_OPTIONS_FAST__</select></label>
   </div>
   <div id="model-chief" class="model-group" style="display:none">
-    <label>Engineer: <select id="model-eng-select">
-      <option value="__MODEL_INTERACTIVE__">__MODEL_INTERACTIVE__ (fast)</option>
-      <option value="__MODEL_QUEUED__">__MODEL_QUEUED__ (reliable)</option>
-    </select></label>
-    <label>QA: <select id="model-qa-select">
-      <option value="__MODEL_INTERACTIVE__">__MODEL_INTERACTIVE__ (fast)</option>
-      <option value="__MODEL_QUEUED__" selected>__MODEL_QUEUED__ (reliable)</option>
-    </select></label>
-    <label>PM: <select id="model-pm-select">
-      <option value="__MODEL_INTERACTIVE__">__MODEL_INTERACTIVE__ (fast)</option>
-      <option value="__MODEL_QUEUED__" selected>__MODEL_QUEUED__ (reliable)</option>
-    </select></label>
+    <label>Engineer: <select id="model-eng-select">__MODEL_OPTIONS_FAST__</select></label>
+    <label>QA: <select id="model-qa-select">__MODEL_OPTIONS_RELIABLE__</select></label>
+    <label>PM: <select id="model-pm-select">__MODEL_OPTIONS_RELIABLE__</select></label>
   </div>
+</div>
+<div id="custom-role-bar" style="display:none">
+  <input type="text" id="custom-role-name" placeholder="Optional extra reviewer role, e.g. UI/UX Designer">
+  <input type="text" id="custom-role-instructions" placeholder="What should they specifically check? e.g. visual consistency, accessibility, design system adherence">
+  <select id="model-custom-select">__MODEL_OPTIONS_RELIABLE__</select>
 </div>
 <div id="submit-msg"></div>
 <div id="active-banner"><span class="dot"></span><span id="active-text">Idle - nothing running</span></div>
@@ -206,6 +218,13 @@ let offset = 0;
 const runs = {}; // run_id -> { el, roles: { role -> {el, started, ended} } }
 const activeRoles = new Map(); // key -> { role, model }
 
+function formatElapsed(ms) {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  return m + 'm ' + (s % 60) + 's';
+}
+
 function updateBanner() {
   const banner = document.getElementById('active-banner');
   const text = document.getElementById('active-text');
@@ -217,20 +236,42 @@ function updateBanner() {
     return;
   }
   banner.classList.add('live');
-  const parts = [...activeRoles.values()].map(v => v.role + ' (' + (v.model || 'unknown model') + ')');
+  const now = Date.now();
+  const parts = [...activeRoles.values()].map(v =>
+    v.role + ' (' + (v.model || 'unknown model') + ') - ' + formatElapsed(now - v.startedAt));
   text.textContent = 'Running: ' + parts.join(', ');
   submitBtn.disabled = true;
 }
 
+// Ticks every second so elapsed time updates live without waiting on the
+// next /api/events poll - direct user request ("I want a timer so I know
+// how long it's been running").
+setInterval(() => {
+  if (activeRoles.size === 0) return;
+  const now = Date.now();
+  for (const v of activeRoles.values()) {
+    if (v.rec && v.rec.timerEl) v.rec.timerEl.textContent = formatElapsed(now - v.startedAt);
+  }
+  updateBanner();
+}, 1000);
+
+const KNOWN_ROLES = ['Engineer', 'QA', 'PM'];
+
 function roleBlock(runEl, run_id, role) {
   const key = run_id + ':' + role;
   if (runs[run_id].roles[key]) return runs[run_id].roles[key];
+  // A custom reviewer's name (e.g. "UI/UX Designer") isn't a valid CSS
+  // class token as-is (spaces, slashes) - fall back to one shared style
+  // for anything outside the 3 fixed roles, keep the real name as the
+  // visible label text.
+  const roleClass = KNOWN_ROLES.includes(role) ? 'role-' + role : 'role-Custom';
   const el = document.createElement('div');
-  el.className = 'role-block role-' + role;
-  el.innerHTML = '<span class="role-label role-' + role + '">' + role + '</span>' +
-                 '<span class="model-tag"></span><div class="lines"></div>';
+  el.className = 'role-block ' + roleClass;
+  el.innerHTML = '<span class="role-label ' + roleClass + '">' + role + '</span>' +
+                 '<span class="model-tag"></span><span class="timer"></span><div class="lines"></div>';
   runEl.appendChild(el);
-  const rec = { el, lines: el.querySelector('.lines'), modelTag: el.querySelector('.model-tag'), ended: false };
+  const rec = { el, lines: el.querySelector('.lines'), modelTag: el.querySelector('.model-tag'),
+                timerEl: el.querySelector('.timer'), startedAt: null, ended: false };
   runs[run_id].roles[key] = rec;
   return rec;
 }
@@ -255,12 +296,16 @@ function addLine(rec, text, cls) {
 function applyEvent(e) {
   const run = runBlock(e.run_id);
   const rec = roleBlock(run.el, e.run_id, e.role);
-  run.el.querySelector('.round').textContent = 'round ' + (e.round || 1);
+  const roundEl = run.el.querySelector('.round');
+  roundEl.textContent = 'attempt ' + (e.round || 1) + ' of ≤2';
+  roundEl.title = 'Attempt 1: first try. Attempt 2 only happens in "Implement + review" '
+                + 'mode, if QA/PM (or a custom reviewer) request changes - never more than 2.';
   const activeKey = e.run_id + ':' + e.role;
   if (e.kind === 'start') {
     rec.el.classList.add('role-active');
+    rec.startedAt = Date.now();
     if (rec.modelTag) rec.modelTag.textContent = e.model ? ('· ' + e.model + ' · running') : '';
-    activeRoles.set(activeKey, { role: e.role, model: e.model });
+    activeRoles.set(activeKey, { role: e.role, model: e.model, startedAt: rec.startedAt, rec });
     updateBanner();
     addLine(rec, 'task: ' + e.task, 'tool');
   } else if (e.kind === 'opencode_event') {
@@ -285,9 +330,11 @@ function applyEvent(e) {
     activeRoles.delete(activeKey);
     updateBanner();
     if (rec.modelTag) rec.modelTag.textContent = rec.modelTag.textContent.replace('· running', '· done');
+    const elapsed = rec.startedAt ? ' (' + formatElapsed(Date.now() - rec.startedAt) + ')' : '';
+    if (rec.timerEl) rec.timerEl.textContent = '';
     const d = document.createElement('div');
     d.className = 'end-status';
-    d.textContent = e.role + ' finished: ' + e.status;
+    d.textContent = e.role + ' finished: ' + e.status + elapsed;
     rec.el.appendChild(d);
   }
 }
@@ -349,6 +396,22 @@ document.getElementById('mode-select').addEventListener('change', () => {
   const mode = document.getElementById('mode-select').value;
   document.getElementById('model-agent').style.display = mode === 'agent' ? 'flex' : 'none';
   document.getElementById('model-chief').style.display = mode === 'chief' ? 'flex' : 'none';
+  document.getElementById('custom-role-bar').style.display = mode === 'chief' ? 'flex' : 'none';
+});
+
+const goalInput = document.getElementById('goal-input');
+// Auto-grow the textarea as multi-line input is typed (Shift+Enter).
+goalInput.addEventListener('input', () => {
+  goalInput.style.height = 'auto';
+  goalInput.style.height = Math.min(goalInput.scrollHeight, 200) + 'px';
+});
+goalInput.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter' && !ev.shiftKey) {
+    ev.preventDefault();
+    document.getElementById('submit-btn').click();
+  }
+  // Shift+Enter: no handler needed - textarea's own default behavior
+  // (insert a newline) already does exactly this.
 });
 
 document.getElementById('submit-btn').addEventListener('click', async () => {
@@ -362,6 +425,14 @@ document.getElementById('submit-btn').addEventListener('click', async () => {
     payload.engineer_model = document.getElementById('model-eng-select').value;
     payload.qa_model = document.getElementById('model-qa-select').value;
     payload.pm_model = document.getElementById('model-pm-select').value;
+    const customName = document.getElementById('custom-role-name').value.trim();
+    const customInstructions = document.getElementById('custom-role-instructions').value.trim();
+    if (customName && customInstructions) {
+      payload.extra_reviewers = [{
+        name: customName, instructions: customInstructions,
+        model: document.getElementById('model-custom-select').value,
+      }];
+    }
   } else {
     payload.model = document.getElementById('model-agent-select').value;
   }
@@ -410,6 +481,20 @@ pollHistory();
 """
 
 
+def _model_options_html(default: str) -> str:
+    """Builds <option> tags from orchestrator.AVAILABLE_MODELS - adding a
+    model there (e.g. a newly-pulled local one) makes it show up in every
+    dropdown at once, instead of needing 5 hardcoded option lists kept in
+    sync by hand."""
+    labels = {orchestrator.MODEL_INTERACTIVE: "fast", orchestrator.MODEL_QUEUED: "reliable"}
+    parts = []
+    for m in orchestrator.AVAILABLE_MODELS:
+        label = labels.get(m, "extra")
+        selected = " selected" if m == default else ""
+        parts.append(f'<option value="{m}"{selected}>{m} ({label})</option>')
+    return "".join(parts)
+
+
 class Handler(BaseHTTPRequestHandler):
     repo: Path = None  # set by main() before serve_forever
 
@@ -433,8 +518,8 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/":
             body = (PAGE
-                    .replace("__MODEL_INTERACTIVE__", orchestrator.MODEL_INTERACTIVE)
-                    .replace("__MODEL_QUEUED__", orchestrator.MODEL_QUEUED)
+                    .replace("__MODEL_OPTIONS_FAST__", _model_options_html(orchestrator.MODEL_INTERACTIVE))
+                    .replace("__MODEL_OPTIONS_RELIABLE__", _model_options_html(orchestrator.MODEL_QUEUED))
                     ).encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -512,7 +597,7 @@ class Handler(BaseHTTPRequestHandler):
         # per-agent model dropdown) - validated against the two models this
         # project actually knows how to run, so a bad value fails fast here
         # with a clear error instead of a confusing downstream OpenCode one.
-        known_models = {orchestrator.MODEL_INTERACTIVE, orchestrator.MODEL_QUEUED}
+        known_models = set(orchestrator.AVAILABLE_MODELS)
         model_fields = (["model"] if mode == "agent"
                          else ["engineer_model", "qa_model", "pm_model"])
         models = {}
@@ -522,6 +607,23 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": f"{field} must be one of {sorted(known_models)}"}, status=400)
                 return
             models[field] = value
+
+        # Optional user-defined reviewer roles (2026-08-27), chief mode only.
+        extra_reviewers = []
+        if mode == "chief":
+            for reviewer in body.get("extra_reviewers") or []:
+                name = (reviewer.get("name") or "").strip()
+                instructions = (reviewer.get("instructions") or "").strip()
+                if not name or not instructions:
+                    self._json({"error": "each extra_reviewers entry needs both "
+                                          "name and instructions"}, status=400)
+                    return
+                reviewer_model = reviewer.get("model") or orchestrator.MODEL_INTERACTIVE
+                if reviewer_model not in known_models:
+                    self._json({"error": f"extra_reviewers model must be one of {sorted(known_models)}"},
+                                status=400)
+                    return
+                extra_reviewers.append({"name": name, "instructions": instructions, "model": reviewer_model})
 
         if not RUN_LOCK.acquire(blocking=False):
             self._json({"error": "another run is already in progress against "
@@ -536,9 +638,10 @@ class Handler(BaseHTTPRequestHandler):
                     chief.run_council(repo, goal, push=push,
                                        engineer_model=models["engineer_model"],
                                        qa_model=models["qa_model"],
-                                       pm_model=models["pm_model"])
+                                       pm_model=models["pm_model"],
+                                       extra_reviewers=extra_reviewers)
                 else:
-                    orchestrator.run_task(repo, goal, push=push, model=models["model"])
+                    orchestrator.handle_goal(repo, goal, push=push, model=models["model"])
             except orchestrator.MissingExecutable as e:
                 orchestrator.emit_dashboard_event(repo, {
                     "run_id": "dashboard-error", "role": "System", "round": 1,
@@ -555,7 +658,8 @@ class Handler(BaseHTTPRequestHandler):
                 RUN_LOCK.release()
 
         threading.Thread(target=worker, daemon=True).start()
-        self._json({"status": "started", "mode": mode, "goal": goal, "push": push, **models})
+        self._json({"status": "started", "mode": mode, "goal": goal, "push": push,
+                    "extra_reviewers": extra_reviewers, **models})
 
     def _handle_push(self, body: dict) -> None:
         branch = (body.get("branch") or "").strip()
