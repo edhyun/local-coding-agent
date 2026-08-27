@@ -39,6 +39,7 @@ would. History comes from the existing `agent-run-log.jsonl`.
 """
 
 import argparse
+import html
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -174,12 +175,12 @@ PAGE = """<!doctype html>
 <body>
 <header>
   <h1>Chief of Staff - live monitor</h1>
-  <span class="repo" id="repo-path"></span>
+  <span class="repo" id="repo-path">__REPO_PATH__</span>
 </header>
 <div id="submit-bar">
   <select id="mode-select">
-    <option value="agent">Build (fast, no review)</option>
     <option value="chief">General (team review: Engineer + QA + PM)</option>
+    <option value="agent">Build (fast, no review)</option>
   </select>
   <textarea id="goal-input" rows="1" placeholder="Describe the task or goal... (Enter to submit, Shift+Enter for a new line)"></textarea>
   <label title="Once QA/PM (and any custom reviewer) all say APPROVE, push the branch to GitHub and open a draft PR automatically - the same thing the 'Push + open PR' button in History does, just pre-approved before you see the result. Leave unchecked to review it yourself first and push manually.">
@@ -195,16 +196,16 @@ PAGE = """<!doctype html>
   objects - slower, but catches problems before you'd otherwise have to notice them.
 </div>
 <div id="model-bar">
-  <div id="model-agent" class="model-group">
+  <div id="model-agent" class="model-group" style="display:none">
     <label>model: <select id="model-agent-select">__MODEL_OPTIONS_FAST__</select></label>
   </div>
-  <div id="model-chief" class="model-group" style="display:none">
+  <div id="model-chief" class="model-group">
     <label>Engineer: <select id="model-eng-select">__MODEL_OPTIONS_FAST__</select></label>
     <label>QA: <select id="model-qa-select">__MODEL_OPTIONS_RELIABLE__</select></label>
     <label>PM: <select id="model-pm-select">__MODEL_OPTIONS_RELIABLE__</select></label>
   </div>
 </div>
-<div id="custom-role-bar" style="display:none">
+<div id="custom-role-bar">
   <input type="text" id="custom-role-name" placeholder="Optional extra reviewer role, e.g. UI/UX Designer">
   <input type="text" id="custom-role-instructions" placeholder="What should they specifically check? e.g. visual consistency, accessibility, design system adherence">
   <select id="model-custom-select">__MODEL_OPTIONS_RELIABLE__</select>
@@ -474,7 +475,6 @@ document.getElementById('hist-list').addEventListener('click', async (ev) => {
   }
 });
 
-document.getElementById('repo-path').textContent = window.location.search.slice(1) ? '' : '';
 pollEvents();
 pollHistory();
 </script>
@@ -522,6 +522,7 @@ class Handler(BaseHTTPRequestHandler):
             body = (PAGE
                     .replace("__MODEL_OPTIONS_FAST__", _model_options_html(orchestrator.MODEL_INTERACTIVE))
                     .replace("__MODEL_OPTIONS_RELIABLE__", _model_options_html(orchestrator.MODEL_QUEUED))
+                    .replace("__REPO_PATH__", html.escape(str(self.repo)))
                     ).encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
