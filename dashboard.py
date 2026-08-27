@@ -73,7 +73,28 @@ PAGE = """<!doctype html>
     display: flex; justify-content: space-between; align-items: center;
   }
   header h1 { font-size: 15px; margin: 0; font-weight: 600; }
-  header .repo { color: #7c7f8a; font-size: 12px; }
+  header .repo { color: #7c7f8a; font-size: 12px; display: flex; align-items: center; gap: 8px; }
+  #workspace-toggle {
+    background: none; border: 1px solid #2a2c34; color: #7c7f8a;
+    padding: 2px 8px; border-radius: 10px; font-size: 10px; cursor: pointer; font-family: inherit;
+  }
+  #workspace-toggle:hover { color: #9a9dab; border-color: #3a3d47; }
+  #workspace-bar {
+    padding: 8px 18px; border-bottom: 1px solid #2a2c34; background: #17181e;
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  }
+  #workspace-path {
+    flex: 1; min-width: 280px; background: #0f1014; border: 1px solid #2a2c34;
+    color: #d8dade; padding: 6px 9px; border-radius: 4px; font-family: inherit; font-size: 12px;
+  }
+  #workspace-bar label { font-size: 11px; color: #9a9dab; display: flex; align-items: center; gap: 4px; }
+  #workspace-go {
+    background: #1c3352; border: 1px solid #2c4a72; color: #7fb2ff;
+    padding: 6px 12px; border-radius: 4px; font-family: inherit; font-size: 12px; cursor: pointer;
+  }
+  #workspace-msg { font-size: 11px; }
+  #workspace-msg.err { color: #ff8686; }
+  #workspace-msg.ok { color: #7bd99a; }
   #active-banner {
     padding: 8px 18px; background: #1b1c22; border-bottom: 1px solid #2a2c34;
     font-size: 12px; color: #6a6d78; display: flex; align-items: center; gap: 8px;
@@ -88,9 +109,14 @@ PAGE = """<!doctype html>
   #layout { display: flex; height: calc(100vh - 105px); }
   #feed, #history { overflow-y: auto; padding: 14px 18px; }
   #feed { flex: 2; border-right: 1px solid #2a2c34; }
-  #history { flex: 1; min-width: 280px; }
+  #history { flex: 1; min-width: 280px; transition: min-width 0.15s, flex 0.15s; }
+  #history.collapsed { flex: 0 0 auto; min-width: 0; width: 140px; overflow: hidden; }
+  #history.collapsed #hist-list { display: none; }
   h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
        color: #7c7f8a; margin: 0 0 10px; }
+  #history-toggle { cursor: pointer; user-select: none; display: flex;
+                     align-items: center; gap: 4px; }
+  #history-toggle:hover { color: #9a9dab; }
   #submit-bar {
     padding: 10px 18px; border-bottom: 1px solid #2a2c34; background: #17181e;
     display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
@@ -123,8 +149,17 @@ PAGE = """<!doctype html>
   }
   #custom-role-bar {
     padding: 8px 18px; border-bottom: 1px solid #2a2c34; background: #17181e;
-    display: flex; gap: 8px; flex-wrap: wrap;
   }
+  #role-presets { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 6px; }
+  #role-presets-label { font-size: 11px; color: #7c7f8a; margin-right: 2px; }
+  .role-chip {
+    background: #0f1014; border: 1px solid #2a2c34; color: #9a9dab;
+    padding: 4px 9px; border-radius: 12px; font-family: inherit; font-size: 11px;
+    cursor: pointer;
+  }
+  .role-chip:hover { border-color: #3a3d47; }
+  .role-chip.active { background: #2e1c3a; border-color: #4a2e5c; color: #c99fe0; }
+  #custom-role-fields { display: flex; gap: 8px; flex-wrap: wrap; }
   #custom-role-bar input[type=text] {
     background: #0f1014; border: 1px solid #2a2c34; color: #d8dade;
     padding: 5px 8px; border-radius: 4px; font-family: inherit; font-size: 11px;
@@ -175,8 +210,17 @@ PAGE = """<!doctype html>
 <body>
 <header>
   <h1>Chief of Staff - live monitor</h1>
-  <span class="repo" id="repo-path">__REPO_PATH__</span>
+  <span class="repo">
+    <span id="repo-path">__REPO_PATH__</span>
+    <button type="button" id="workspace-toggle">change</button>
+  </span>
 </header>
+<div id="workspace-bar" style="display:none">
+  <input type="text" id="workspace-path" placeholder="/absolute/path/to/a/project">
+  <label><input type="checkbox" id="workspace-create"> create new (git init + empty repo)</label>
+  <button type="button" id="workspace-go">Go</button>
+  <span id="workspace-msg"></span>
+</div>
 <div id="submit-bar">
   <select id="mode-select">
     <option value="chief">General (team review: Engineer + QA + PM)</option>
@@ -206,17 +250,62 @@ PAGE = """<!doctype html>
   </div>
 </div>
 <div id="custom-role-bar">
-  <input type="text" id="custom-role-name" placeholder="Optional extra reviewer role, e.g. UI/UX Designer">
-  <input type="text" id="custom-role-instructions" placeholder="What should they specifically check? e.g. visual consistency, accessibility, design system adherence">
-  <select id="model-custom-select">__MODEL_OPTIONS_RELIABLE__</select>
+  <div id="role-presets">
+    <span id="role-presets-label">extra reviewers:</span>
+    <button type="button" class="role-chip" data-role="uiux">+ UI/UX Designer</button>
+    <button type="button" class="role-chip" data-role="security">+ Security</button>
+    <button type="button" class="role-chip" data-role="performance">+ Performance</button>
+    <button type="button" class="role-chip" data-role="accessibility">+ Accessibility</button>
+    <button type="button" class="role-chip" data-role="docs">+ Docs</button>
+    <select id="model-custom-select" title="Model used for all extra reviewers (presets and custom)">__MODEL_OPTIONS_RELIABLE__</select>
+  </div>
+  <div id="custom-role-fields">
+    <input type="text" id="custom-role-name" placeholder="Or a custom role name, e.g. Data Privacy Reviewer">
+    <input type="text" id="custom-role-instructions" placeholder="What should they specifically check?">
+  </div>
 </div>
 <div id="submit-msg"></div>
 <div id="active-banner"><span class="dot"></span><span id="active-text">Idle - nothing running</span></div>
 <div id="layout">
   <div id="feed"><h2>Live feed</h2><div id="runs"></div></div>
-  <div id="history"><h2>History</h2><div id="hist-list"><div id="empty">No runs yet.</div></div></div>
+  <div id="history">
+    <h2 id="history-toggle">History <span id="history-arrow">▾</span></h2>
+    <div id="hist-list"><div id="empty">No runs yet.</div></div>
+  </div>
 </div>
 <script>
+// Templatized reviewer roles (direct user request: "don't ask users to put
+// all the details of what roles agents need... make presets... allow users
+// to create their own team with only a few clicks"). Each preset already
+// has real instructions written - clicking a chip adds it to the team,
+// no typing required. The custom-role fields below stay as a fallback for
+// anything not covered by a preset, not the primary way to add a role.
+const ROLE_PRESETS = {
+  uiux: { name: 'UI/UX Designer',
+    instructions: 'Check that the diff maintains visual consistency, accessibility, and follows the existing design system. Flag anything that would look inconsistent or confusing to an end user.' },
+  security: { name: 'Security Reviewer',
+    instructions: 'Check for security issues: injection vulnerabilities, hardcoded secrets, unsafe deserialization, missing input validation, and anything that could be exploited.' },
+  performance: { name: 'Performance Reviewer',
+    instructions: 'Check for performance issues: unnecessary loops, N+1 queries, unbounded memory growth, blocking calls that should be async, and anything that would slow down at scale.' },
+  accessibility: { name: 'Accessibility Reviewer',
+    instructions: 'Check that any UI changes are accessible: proper ARIA labels, keyboard navigation, sufficient color contrast, and screen-reader compatibility.' },
+  docs: { name: 'Docs Reviewer',
+    instructions: 'Check that any new public functions, classes, or APIs have clear documentation explaining WHY, not just what, and that the change would be understandable to someone unfamiliar with this code.' },
+};
+const selectedPresetRoles = new Set();
+document.querySelectorAll('.role-chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    const key = chip.dataset.role;
+    if (selectedPresetRoles.has(key)) {
+      selectedPresetRoles.delete(key);
+      chip.classList.remove('active');
+    } else {
+      selectedPresetRoles.add(key);
+      chip.classList.add('active');
+    }
+  });
+});
+
 let offset = 0;
 const runs = {}; // run_id -> { el, roles: { role -> {el, started, ended} } }
 const activeRoles = new Map(); // key -> { role, model }
@@ -428,14 +517,16 @@ document.getElementById('submit-btn').addEventListener('click', async () => {
     payload.engineer_model = document.getElementById('model-eng-select').value;
     payload.qa_model = document.getElementById('model-qa-select').value;
     payload.pm_model = document.getElementById('model-pm-select').value;
+    const extraModel = document.getElementById('model-custom-select').value;
+    const extraReviewers = [...selectedPresetRoles].map(key => ({
+      name: ROLE_PRESETS[key].name, instructions: ROLE_PRESETS[key].instructions, model: extraModel,
+    }));
     const customName = document.getElementById('custom-role-name').value.trim();
     const customInstructions = document.getElementById('custom-role-instructions').value.trim();
     if (customName && customInstructions) {
-      payload.extra_reviewers = [{
-        name: customName, instructions: customInstructions,
-        model: document.getElementById('model-custom-select').value,
-      }];
+      extraReviewers.push({ name: customName, instructions: customInstructions, model: extraModel });
     }
+    if (extraReviewers.length) payload.extra_reviewers = extraReviewers;
   } else {
     payload.model = document.getElementById('model-agent-select').value;
   }
@@ -472,6 +563,59 @@ document.getElementById('hist-list').addEventListener('click', async (ev) => {
     showMsg('Push request failed: ' + e, 'err');
     btn.disabled = false;
     btn.textContent = 'Push + open PR';
+  }
+});
+
+// Collapsible history panel (direct user request - "doesn't add a lot of
+// value, user might want to hide it"). Persisted per-browser via
+// localStorage so the choice survives a reload; wrapped in try/catch since
+// storage access can throw in some contexts (private windows etc.) and
+// this is a pure convenience, never worth breaking the page over.
+(function initHistoryToggle() {
+  const historyEl = document.getElementById('history');
+  const arrow = document.getElementById('history-arrow');
+  let collapsed = false;
+  try { collapsed = localStorage.getItem('historyCollapsed') === '1'; } catch (e) {}
+  function apply() {
+    historyEl.classList.toggle('collapsed', collapsed);
+    arrow.textContent = collapsed ? '▸' : '▾';
+  }
+  apply();
+  document.getElementById('history-toggle').addEventListener('click', () => {
+    collapsed = !collapsed;
+    apply();
+    try { localStorage.setItem('historyCollapsed', collapsed ? '1' : '0'); } catch (e) {}
+  });
+})();
+
+// Create/switch workspace (direct user request - "allow user to create a
+// new workspace, to start from scratch"). A full page reload after a
+// successful switch is deliberate, not a shortcut: the server now serves
+// a different repo entirely, so the event-offset counter, history, and
+// every "which repo am I looking at" assumption need to start fresh - a
+// reload gets all of that correct for free instead of hand-rewriting
+// client state to match a repo the page never loaded for.
+document.getElementById('workspace-toggle').addEventListener('click', () => {
+  const bar = document.getElementById('workspace-bar');
+  bar.style.display = bar.style.display === 'none' ? 'flex' : 'none';
+});
+document.getElementById('workspace-go').addEventListener('click', async () => {
+  const path = document.getElementById('workspace-path').value.trim();
+  const create = document.getElementById('workspace-create').checked;
+  const msg = document.getElementById('workspace-msg');
+  if (!path) { msg.textContent = 'Enter a path first.'; msg.className = 'err'; return; }
+  msg.textContent = 'Working...'; msg.className = '';
+  try {
+    const res = await fetch('/api/workspace', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({path, create}),
+    });
+    const data = await res.json();
+    if (!res.ok) { msg.textContent = 'Error: ' + (data.error || res.status); msg.className = 'err'; return; }
+    msg.textContent = 'Switched to ' + data.repo + ' - reloading...'; msg.className = 'ok';
+    setTimeout(() => window.location.reload(), 600);
+  } catch (e) {
+    msg.textContent = 'Request failed: ' + e; msg.className = 'err';
   }
 });
 
@@ -582,6 +726,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/push":
             self._handle_push(body)
+            return
+        if parsed.path == "/api/workspace":
+            self._handle_workspace(body)
             return
         self._json({"error": "not found"}, status=404)
 
@@ -711,6 +858,59 @@ class Handler(BaseHTTPRequestHandler):
 
         threading.Thread(target=worker, daemon=True).start()
         self._json({"status": "started", "branch": branch})
+
+    def _handle_workspace(self, body: dict) -> None:
+        """Direct user request: "allow user to create a new workspace, to
+        start from scratch." Synchronous (not a background thread, unlike
+        submit/push) - mkdir + git init + one commit is fast, and the
+        frontend needs a definite answer before it reloads the page for the
+        new repo. Refuses while a run is in progress against the CURRENT
+        workspace, same RUN_LOCK guard as submit/push - switching out from
+        under a running task would leave it writing into a repo the UI no
+        longer shows."""
+        path_str = (body.get("path") or "").strip()
+        create = bool(body.get("create", False))
+        if not path_str:
+            self._json({"error": "path is required"}, status=400)
+            return
+        new_repo = Path(path_str).expanduser()
+        if not new_repo.is_absolute():
+            self._json({"error": "path must be absolute, e.g. /Users/you/projects/new-thing"},
+                        status=400)
+            return
+
+        if not RUN_LOCK.acquire(blocking=False):
+            self._json({"error": "a run is in progress against the current workspace - "
+                                  "wait for it to finish before switching"}, status=409)
+            return
+        try:
+            if create:
+                if new_repo.exists() and any(new_repo.iterdir()):
+                    self._json({"error": f"{new_repo} already exists and is not empty"},
+                                status=400)
+                    return
+                new_repo.mkdir(parents=True, exist_ok=True)
+                orchestrator.run(["git", "init", "-q"], cwd=new_repo, check=True)
+                (new_repo / "README.md").write_text(f"# {new_repo.name}\n")
+                orchestrator.run(["git", "add", "-A"], cwd=new_repo, check=True)
+                orchestrator.run(["git", "commit", "-q", "-m", "Initial commit"],
+                                  cwd=new_repo, check=True)
+            else:
+                if not new_repo.is_dir():
+                    self._json({"error": f"{new_repo} does not exist - check "
+                                          "\"create new\" to start a fresh workspace there"},
+                                status=400)
+                    return
+                if not (new_repo / ".git").exists():
+                    self._json({"error": f"{new_repo} is not a git repository - check "
+                                          "\"create new\" to initialize it"}, status=400)
+                    return
+            Handler.repo = new_repo.resolve()
+            self._json({"status": "ok", "repo": str(Handler.repo)})
+        except Exception as e:  # noqa: BLE001 - surface the real git/filesystem error, don't swallow it
+            self._json({"error": str(e)}, status=500)
+        finally:
+            RUN_LOCK.release()
 
 
 def main():

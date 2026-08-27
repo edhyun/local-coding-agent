@@ -36,13 +36,18 @@ an issue and say so — that's the actual experiment.
   looping.
 - **`dashboard.py`** — a local web page (`127.0.0.1` only, no auth) that
   shows the above running live (streamed model output, per-role status,
-  run history) and lets you submit a goal and approve a push from the page
-  itself. No auth means anything that can reach this port can trigger real
-  runs and pushes, not just read history - accepted here because the same
-  no-auth-on-localhost boundary already covers the terminal REPLs below;
-  this just gives that same trusted actor (you, on your machine) a second
-  way in. Every push still requires an explicit click, same gate as the
-  terminal's `--push` flag - nothing pushes automatically.
+  run history, collapsible) and lets you submit a goal and approve a push
+  from the page itself. Also lets you add extra reviewer roles from a set
+  of presets (UI/UX, Security, Performance, Accessibility, Docs) with one
+  click each, or a fully custom one, and switch to - or create from
+  scratch (`git init` + an empty first commit) - a different project
+  directory without restarting the server. No auth means anything that can
+  reach this port can trigger real runs and pushes, not just read history -
+  accepted here because the same no-auth-on-localhost boundary already
+  covers the terminal REPLs below; this just gives that same trusted actor
+  (you, on your machine) a second way in. Every push still requires an
+  explicit click, same gate as the terminal's `--push` flag - nothing
+  pushes automatically.
 
 ## Setup
 
