@@ -9,6 +9,7 @@ live local model) is deliberately not covered here - see TODOS.md.
 """
 
 import json
+import os
 import shutil
 import unittest.mock
 import subprocess
@@ -180,6 +181,93 @@ class TestQueueCrashResume(unittest.TestCase):
         paths = orchestrator.enqueue_tasks(self.repo, ["task one"])
         pending = orchestrator.pending_queue_entries(self.repo)
         self.assertIn(paths[0], pending)
+
+
+class TestAllQueueEntries(unittest.TestCase):
+    def setUp(self):
+        self.repo = make_scratch_repo()
+
+    def tearDown(self):
+        shutil.rmtree(self.repo, ignore_errors=True)
+
+    def test_includes_done_entries_pending_does_not(self):
+        """The 24/7 dashboard queue panel needs the full history (done,
+        needs_human, failed), not just what's left to run - unlike
+        pending_queue_entries(), which is deliberately scoped to that."""
+        paths = orchestrator.enqueue_tasks(self.repo, ["task one", "task two"])
+        entry = orchestrator.load_queue_entry(paths[0])
+        entry["status"] = "done"
+        orchestrator.save_queue_entry(paths[0], entry)
+
+        all_entries = orchestrator.all_queue_entries(self.repo)
+        self.assertEqual(len(all_entries), 2)
+        statuses = {e["id"]: e["status"] for e in all_entries}
+        self.assertEqual(statuses[paths[0].stem], "done")
+        self.assertEqual(statuses[paths[1].stem], "pending")
+
+    def test_empty_queue(self):
+        self.assertEqual(orchestrator.all_queue_entries(self.repo), [])
+
+
+class TestDaemonSignaling(unittest.TestCase):
+    def setUp(self):
+        self.repo = make_scratch_repo()
+
+    def tearDown(self):
+        shutil.rmtree(self.repo, ignore_errors=True)
+
+    def test_stop_flag_round_trip(self):
+        self.assertFalse(orchestrator.daemon_stop_requested(self.repo))
+        orchestrator.request_daemon_stop(self.repo)
+        self.assertTrue(orchestrator.daemon_stop_requested(self.repo))
+        orchestrator.clear_daemon_stop(self.repo)
+        self.assertFalse(orchestrator.daemon_stop_requested(self.repo))
+
+    def test_clear_stop_is_a_noop_when_no_flag_exists(self):
+        orchestrator.clear_daemon_stop(self.repo)  # must not raise
+
+    def test_status_round_trip_includes_pid_and_timestamp(self):
+        orchestrator.write_daemon_status(self.repo, {"state": "idle", "current_task": None})
+        status = orchestrator.read_daemon_status(self.repo)
+        self.assertEqual(status["state"], "idle")
+        self.assertIn("pid", status)
+        self.assertIn("updated_at", status)
+
+    def test_read_status_before_any_write_returns_none(self):
+        self.assertIsNone(orchestrator.read_daemon_status(self.repo))
+
+    def test_daemon_is_alive_true_for_this_process(self):
+        """os.getpid() is guaranteed to be alive for the duration of this
+        test process - the real signal-0 liveness check, not a mock."""
+        self.assertTrue(orchestrator.daemon_is_alive({"pid": os.getpid()}))
+
+    def test_daemon_is_alive_false_for_missing_status(self):
+        self.assertFalse(orchestrator.daemon_is_alive(None))
+
+    def test_status_file_does_not_pollute_the_queue_listing(self):
+        """Real bug caught running the actual daemon (2026-08-30): the
+        status file used to live inside queue_dir(), which
+        pending_queue_entries()/all_queue_entries() both glob as "*.json"
+        and treat as task entries - pending_queue_entries() crashed with
+        KeyError('status') on its own next iteration, since the status
+        payload uses "state", not "status". Guards against that regressing
+        if the status file's location ever moves back."""
+        orchestrator.enqueue_tasks(self.repo, ["a real task"])
+        orchestrator.write_daemon_status(self.repo, {"state": "idle", "current_task": None})
+
+        all_entries = orchestrator.all_queue_entries(self.repo)
+        self.assertEqual(len(all_entries), 1)
+        self.assertEqual(all_entries[0]["task"], "a real task")
+        pending = orchestrator.pending_queue_entries(self.repo)  # must not raise
+        self.assertEqual(len(pending), 1)
+
+    def test_daemon_is_alive_false_for_a_dead_pid(self):
+        """PID 999999 is picked as almost certainly unassigned on any real
+        machine (PIDs wrap well below that on every platform this runs
+        on) - a ProcessLookupError from os.kill is exactly the "daemon
+        crashed/was killed, status file is stale" case this function
+        exists to catch."""
+        self.assertFalse(orchestrator.daemon_is_alive({"pid": 999999}))
 
 
 class TestCommitChanges(unittest.TestCase):

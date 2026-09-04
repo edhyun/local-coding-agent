@@ -50,6 +50,7 @@ exercised enough to know how good the reviewer personas actually are.
 """
 
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -58,17 +59,23 @@ from orchestrator import (
     MODEL_QUEUED,
     MissingExecutable,
     append_log,
+    clear_daemon_stop,
     current_branch,
+    daemon_stop_requested,
     emit_dashboard_event,
     ensure_agent_instructions_override,
     ensure_git_exclude,
     ensure_permission_config,
     handle_goal,
     invoke_opencode,
+    load_queue_entry,
+    pending_queue_entries,
     push_and_open_pr,
     run,
     run_task,
+    save_queue_entry,
     slugify,
+    write_daemon_status,
 )
 
 QA_PROMPT = """You are a skeptical senior QA engineer reviewing a colleague's finished change before it ships. You did not write this code and have no stake in defending it.
@@ -342,6 +349,116 @@ def run_council(repo: Path, goal: str, model: str = MODEL_INTERACTIVE, push: boo
                      "engineer": eng_result, "qa": qa_verdict, "pm": pm_verdict}
 
 
+DEFAULT_DAEMON_POLL_INTERVAL = 20  # seconds to wait between empty-queue checks
+
+
+def process_council_queue(repo: Path, engineer_model: str = MODEL_QUEUED,
+                           qa_model: str = MODEL_QUEUED, pm_model: str = MODEL_QUEUED,
+                           extra_reviewers: list[dict] | None = None,
+                           poll_interval: int = DEFAULT_DAEMON_POLL_INTERVAL) -> None:
+    """The 24/7 worker (2026-08-30, direct user request: "run my local model
+    24/7... give it a to-do list and it does one by one... manage subagents
+    and review it for quality... never rest until it absolutely requires
+    human review"). Reuses orchestrator.py's existing crash-resumable
+    file-spool queue (built 2026-08-27 for `queue:` batches against a lone
+    Engineer) but drains it through run_council instead of run_task - every
+    item gets the full Engineer -> QA -> PM (+ any extra reviewers)
+    pipeline, not just one agent's unsupervised pass. Defaults every role
+    to MODEL_QUEUED, not MODEL_INTERACTIVE - same "detached batches care
+    about correctness, not latency" reasoning orchestrator.py's own
+    `queue:` command already uses.
+
+    Never exits when the queue is empty - it polls (in 1s ticks, so a stop
+    request lands within about a second rather than waiting out a full
+    poll_interval) and waits for more, since "never rest" is the entire
+    point. Stops only on an explicit signal: orchestrator.request_daemon_stop
+    (the dashboard could call this; nothing wires it up yet) or plain
+    Ctrl-C on the tmux session running it.
+
+    Never auto-pushes (push=False, hardcoded) - confirmed directly: asked
+    "commit only" vs. "auto-push", user chose commit-only. Every push stays
+    an explicit human action, same rule as everywhere else in this project.
+
+    An item that can't reach APPROVE (ESCALATED, NEEDS_HUMAN, or the
+    Engineer stage failing outright) is marked "needs_human" and the
+    daemon moves on to the next item rather than blocking the rest of the
+    list on it - confirmed directly: asked "skip and flag" vs. "pause the
+    whole queue", user chose skip-and-flag. "done" covers APPROVED,
+    ANSWERED (it was a question, not a code change - nothing to review),
+    and ENGINEER_NO_CHANGES (benign no-op, e.g. a duplicate task) - none of
+    those need a human to look at anything.
+
+    MissingExecutable (opencode itself isn't runnable) stops the daemon
+    entirely instead of being treated as one failed item - every remaining
+    item would fail the identical way, so continuing would just be a hot
+    failure loop, not useful unattended progress; a broken environment
+    itself is the thing that "absolutely requires human review" here. Any
+    OTHER exception is caught per-item instead (broad except is deliberate
+    here, unlike elsewhere in this project's stricter D7 verification
+    style) - one task failing for an unexpected reason must not take the
+    whole 24/7 process down with it; it's marked "failed" and the daemon
+    moves on to the next item.
+    """
+    extra_reviewers = extra_reviewers or []
+    repo = repo.resolve()
+    ensure_git_exclude(repo)
+    ensure_agent_instructions_override(repo)
+    clear_daemon_stop(repo)
+    print(f"\nDaemon started - {repo}")
+    print(f"Roster: Engineer/{engineer_model}, QA/{qa_model}, PM/{pm_model}"
+          + (f", + {len(extra_reviewers)} extra reviewer(s)" if extra_reviewers else "")
+          + ". Commits only, never pushes. Runs until stopped - add tasks from "
+            "the dashboard's queue panel while this keeps going.")
+
+    while True:
+        if daemon_stop_requested(repo):
+            clear_daemon_stop(repo)
+            write_daemon_status(repo, {"state": "stopped", "current_task": None})
+            print("\nStop requested - daemon exiting cleanly.")
+            return
+
+        pending = pending_queue_entries(repo)
+        if not pending:
+            write_daemon_status(repo, {"state": "idle", "current_task": None})
+            for _ in range(poll_interval):
+                if daemon_stop_requested(repo):
+                    break
+                time.sleep(1)
+            continue
+
+        path = pending[0]
+        entry = load_queue_entry(path)
+        task = entry["task"]
+        entry["status"] = "running"
+        save_queue_entry(path, entry)
+        write_daemon_status(repo, {"state": "working", "current_task": task})
+        print(f"\n--- daemon: {task} ({len(pending) - 1} remaining after this) ---")
+
+        try:
+            report = run_council(repo, task, model=engineer_model, push=False,
+                                  engineer_model=engineer_model, qa_model=qa_model,
+                                  pm_model=pm_model, extra_reviewers=extra_reviewers)
+            status = report["status"]
+            entry["result"] = status
+            entry["branch"] = report.get("branch")
+            entry["status"] = ("done" if status in ("APPROVED", "ANSWERED", "ENGINEER_NO_CHANGES")
+                                else "needs_human")
+        except MissingExecutable as e:
+            entry["status"] = "failed"
+            entry["error"] = str(e)
+            save_queue_entry(path, entry)
+            write_daemon_status(repo, {"state": "stopped", "current_task": None,
+                                        "error": f"MissingExecutable: {e}"})
+            print(f"\nERROR: {e}\nDaemon stopping - this would fail every remaining "
+                  f"item the same way. Fix the environment and restart the daemon session.")
+            return
+        except Exception as e:  # noqa: BLE001 - one bad item must not kill the daemon
+            entry["status"] = "failed"
+            entry["error"] = f"{type(e).__name__}: {e}"
+            print(f"\nUnexpected error on this item, marked failed, continuing: {e}")
+        save_queue_entry(path, entry)
+
+
 def repl(repo: Path) -> None:
     repo = repo.resolve()
     ensure_git_exclude(repo)
@@ -383,12 +500,37 @@ def main():
         repl(Path(args[0]))
         return
 
+    if "--daemon" in args:
+        args.remove("--daemon")
+        model = MODEL_QUEUED
+        if "--model" in args:
+            i = args.index("--model")
+            try:
+                model = args[i + 1]
+            except IndexError:
+                print("usage: chief.py --daemon <repo-path> [--model <model>]")
+                sys.exit(2)
+            del args[i:i + 2]
+        if len(args) != 1:
+            print("usage: chief.py --daemon <repo-path> [--model <model>]")
+            sys.exit(2)
+        try:
+            process_council_queue(Path(args[0]), engineer_model=model,
+                                   qa_model=model, pm_model=model)
+        except MissingExecutable as e:
+            print(f"ERROR: {e}")
+            sys.exit(3)
+        except KeyboardInterrupt:
+            print("\nInterrupted - daemon stopped.")
+        return
+
     push = "--push" in args
     if push:
         args.remove("--push")
     if len(args) < 2:
         print("usage: chief.py <repo-path> <goal> [--push]")
         print("       chief.py --repl <repo-path>")
+        print("       chief.py --daemon <repo-path> [--model <model>]")
         sys.exit(2)
     repo = Path(args[0])
     goal = " ".join(args[1:])

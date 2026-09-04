@@ -594,6 +594,99 @@ def pending_queue_entries(repo: Path) -> list[Path]:
     return entries
 
 
+def all_queue_entries(repo: Path) -> list[dict]:
+    """Every queue entry regardless of status, oldest-first by filename
+    order, each tagged with its filename stem as "id". Added for the 24/7
+    council daemon's dashboard panel (2026-08-30) - pending_queue_entries()
+    deliberately only returns what's left to do; the dashboard needs the
+    done/needs_human/failed ones too, to show the daemon's actual history."""
+    qdir = queue_dir(repo)
+    entries = []
+    for p in sorted(qdir.glob("*.json")):
+        entry = load_queue_entry(p)
+        entry["id"] = p.stem
+        entries.append(entry)
+    return entries
+
+
+# 24/7 daemon signaling (2026-08-30, direct user request: "run my local
+# model 24/7... never rest until it absolutely requires human review").
+# The daemon (chief.process_council_queue) is a separate long-lived process
+# from the dashboard (started via daemon-session.sh's own tmux session,
+# same pattern as agent-session.sh/chief-session.sh) - these are plain
+# files in the queue dir, not in-process state, because the dashboard and
+# the daemon are two different processes that only share a filesystem.
+DAEMON_STOP_FLAG = "STOP"
+DAEMON_STATUS_FILE = "daemon-status.json"
+
+
+def request_daemon_stop(repo: Path) -> None:
+    (queue_dir(repo) / DAEMON_STOP_FLAG).write_text("")
+
+
+def daemon_stop_requested(repo: Path) -> bool:
+    return (queue_dir(repo) / DAEMON_STOP_FLAG).exists()
+
+
+def clear_daemon_stop(repo: Path) -> None:
+    flag = queue_dir(repo) / DAEMON_STOP_FLAG
+    if flag.exists():
+        flag.unlink()
+
+
+def _daemon_status_path(repo: Path) -> Path:
+    """Deliberately NOT inside queue_dir(repo) - all_queue_entries() and
+    pending_queue_entries() both glob that directory for "*.json" and treat
+    every match as a task entry. A live bug (2026-08-30, caught running the
+    actual daemon against a scratch repo): with the status file inside
+    QUEUE_DIR, pending_queue_entries() crashed with KeyError('status') on
+    its own second iteration, because the status payload uses "state", not
+    "status". DASHBOARD_DIR already exists for exactly this kind of
+    process-observability file (events.jsonl) and is never glob-scanned as
+    task data, so the status file lives there instead."""
+    d = repo / DASHBOARD_DIR
+    d.mkdir(exist_ok=True)
+    return d / DAEMON_STATUS_FILE
+
+
+def write_daemon_status(repo: Path, status: dict) -> None:
+    payload = {"pid": os.getpid(), "updated_at": datetime.now(timezone.utc).isoformat(), **status}
+    _daemon_status_path(repo).write_text(json.dumps(payload))
+
+
+def read_daemon_status(repo: Path) -> dict | None:
+    p = _daemon_status_path(repo)
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text())
+    except json.JSONDecodeError:
+        return None
+
+
+def daemon_is_alive(status: dict | None) -> bool:
+    """A status file alone doesn't prove the process is still running - it
+    survives a crash or `tmux kill-session` just fine. Checks the recorded
+    PID actually exists (signal 0: existence check, sends nothing) rather
+    than trusting the heartbeat timestamp, since a stale timestamp can't be
+    told apart from "still alive but using a long poll_interval" without
+    also knowing what interval it was started with. Used by the dashboard
+    to refuse a conflicting submit/push while the daemon genuinely holds
+    the repo, and to show "not running" instead of a stale "alive" from
+    the last time it was up."""
+    if not status or not isinstance(status.get("pid"), int):
+        return False
+    try:
+        os.kill(status["pid"], 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # process exists, just not signalable by us
+    except OSError:
+        return False
+    return True
+
+
 def process_queue(repo: Path, model: str) -> None:
     """Drains the queue, oldest first. Resuming after a restart is just
     calling this again - pending_queue_entries() finds exactly what's left,

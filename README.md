@@ -48,6 +48,22 @@ an issue and say so — that's the actual experiment.
   (you, on your machine) a second way in. Every push still requires an
   explicit click, same gate as the terminal's `--push` flag - nothing
   pushes automatically.
+- **`chief.py --daemon`** (via `daemon-session.sh`) — a 24/7 worker: give
+  it a to-do list (queue tasks from the dashboard's queue panel, or
+  `queue: t1 ; t2 ; ...` in `chief-session.sh`'s REPL) and it drains them
+  one at a time through the same Engineer/QA/PM pipeline, forever - it
+  never exits on an empty queue, it polls and waits for more. Commits only
+  and never auto-pushes; anything that can't get QA/PM approval after the
+  one bounded revision round is flagged `needs_human` in the queue and it
+  moves on to the next item rather than blocking on it. Stops only on an
+  explicit signal (`touch .agent-queue/STOP` in the repo, or Ctrl-C the
+  session) or if the environment itself is broken (e.g. OpenCode isn't
+  runnable) - a broken environment would fail every remaining item
+  identically, so it stops instead of hot-looping. The dashboard refuses
+  to run a submit/push of its own while the daemon's heartbeat looks alive
+  (a real cross-process check, not just a UI hint) - don't also run
+  `agent-session.sh`/`chief-session.sh` against the same repo while the
+  daemon is active, same caveat as running any two of these at once.
 
 ## Setup
 
@@ -79,11 +95,19 @@ packaged or pinned to specific versions yet:
 
 # A live monitor - and a second way to submit goals/approve pushes (separate terminal)
 ./dashboard-session.sh /path/to/some/repo
+
+# The 24/7 worker - drains a to-do list through Engineer/QA/PM forever
+./daemon-session.sh /path/to/some/repo
 ```
 
-Each of the first two starts (or reattaches to) a tmux session named
-`agent-<repo>` / `chief-<repo>`. Detach with `Ctrl-b d` — it keeps running;
-reattach later with the same command.
+Each of these starts (or reattaches to) a tmux session named
+`agent-<repo>` / `chief-<repo>` / `dashboard-<repo>` / `daemon-<repo>`.
+Detach with `Ctrl-b d` — it keeps running; reattach later with the same
+command. Don't run more than one of these against the same repo at the
+same time (the dashboard's own submit/push refuse while the daemon looks
+alive, but the two terminal REPLs don't know about each other or the
+daemon) — same "one working tree, one active writer" rule as any two
+people pushing to the same branch.
 
 **Set your expectations on first run.** The reliable model path (LM
 Studio) takes 66 seconds to 4+ minutes per model call. `chief.py` makes

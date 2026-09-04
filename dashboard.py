@@ -112,16 +112,38 @@ PAGE = """<!doctype html>
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
   .model-tag { font-size: 10px; color: #6a6d78; margin-left: 6px; }
   #layout { display: flex; height: calc(100vh - 105px); }
-  #feed, #history { overflow-y: auto; padding: 14px 18px; }
+  #feed, #history, #queue { overflow-y: auto; padding: 14px 18px; }
   #feed { flex: 2; border-right: 1px solid #2a2c34; }
-  #history { flex: 1; min-width: 280px; transition: min-width 0.15s, flex 0.15s; }
+  #history { flex: 1; min-width: 280px; border-right: 1px solid #2a2c34; transition: min-width 0.15s, flex 0.15s; }
   #history.collapsed { flex: 0 0 auto; min-width: 0; width: 140px; overflow: hidden; }
   #history.collapsed #hist-list { display: none; }
+  #queue { flex: 1; min-width: 280px; transition: min-width 0.15s, flex 0.15s; }
+  #queue.collapsed { flex: 0 0 auto; min-width: 0; width: 140px; overflow: hidden; }
+  #queue.collapsed #queue-body { display: none; }
   h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
        color: #7c7f8a; margin: 0 0 10px; }
-  #history-toggle { cursor: pointer; user-select: none; display: flex;
+  #history-toggle, #queue-toggle { cursor: pointer; user-select: none; display: flex;
                      align-items: center; gap: 4px; }
-  #history-toggle:hover { color: #9a9dab; }
+  #history-toggle:hover, #queue-toggle:hover { color: #9a9dab; }
+  #daemon-status { font-size: 11px; padding: 6px 8px; border-radius: 4px;
+                    margin-bottom: 10px; background: #23252c; color: #9a9dab; }
+  #daemon-status.alive { background: #163a24; color: #7bd99a; }
+  #daemon-status.stale { background: #3a1616; color: #ff8686; }
+  #queue-tasks-input { width: 100%; box-sizing: border-box; background: #0f1014;
+                        border: 1px solid #2a2c34; color: #d8dade; padding: 7px 10px;
+                        border-radius: 4px; font-family: inherit; font-size: 12px;
+                        resize: vertical; min-height: 50px; margin-bottom: 6px; }
+  #queue-add-btn { background: #1c3352; border: 1px solid #2c4a72; color: #7fb2ff;
+                    padding: 6px 10px; border-radius: 4px; font-size: 12px;
+                    cursor: pointer; font-family: inherit; }
+  #queue-msg { font-size: 11px; margin: 6px 0; min-height: 14px; }
+  #queue-msg.err { color: #ff8686; }
+  #queue-msg.ok { color: #7bd99a; }
+  .queue-item { padding: 8px 0; border-bottom: 1px solid #23252c; }
+  .queue-task { color: #d8dade; margin-top: 3px; font-size: 12px; }
+  .st-PENDING { background: #23252c; color: #9a9dab; }
+  .st-RUNNING { background: #1c3352; color: #7fb2ff; }
+  .st-FAILED { background: #3a1616; color: #ff8686; }
   #submit-bar {
     padding: 10px 18px; border-bottom: 1px solid #2a2c34; background: #17181e;
     display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
@@ -276,6 +298,16 @@ PAGE = """<!doctype html>
   <div id="history">
     <h2 id="history-toggle">History <span id="history-arrow">▾</span></h2>
     <div id="hist-list"><div id="empty">No runs yet.</div></div>
+  </div>
+  <div id="queue">
+    <h2 id="queue-toggle">24/7 Queue <span id="queue-arrow">▾</span></h2>
+    <div id="queue-body">
+      <div id="daemon-status">checking daemon...</div>
+      <textarea id="queue-tasks-input" rows="3" placeholder="One task per line - added to the queue for the daemon (chief.py --daemon / daemon-session.sh) to work through, not run by this page."></textarea>
+      <button type="button" id="queue-add-btn">+ Add to queue</button>
+      <div id="queue-msg"></div>
+      <div id="queue-list"><div id="queue-empty">Queue is empty.</div></div>
+    </div>
   </div>
 </div>
 <script>
@@ -483,6 +515,63 @@ async function pollHistory() {
   setTimeout(pollHistory, 3000);
 }
 
+// 24/7 daemon queue panel (direct user request: "run my local model 24/7...
+// give it a to-do list and it does one by one... never rest until it
+// absolutely requires human review"). The daemon (chief.py --daemon) is a
+// SEPARATE process from this dashboard - this page only reads the same
+// .agent-queue files and the daemon's heartbeat file, and can add new
+// tasks to the queue, but never runs the queue itself.
+function daemonStatusText(daemon) {
+  if (!daemon || !daemon.alive) return 'Daemon: not running. Start it with ./daemon-session.sh <repo>.';
+  if (daemon.state === 'working') return 'Daemon: running - working on: ' + (daemon.current_task || '?');
+  if (daemon.state === 'idle') return 'Daemon: running - idle, watching for new tasks.';
+  if (daemon.state === 'stopped') return 'Daemon: stopped' + (daemon.error ? ' (' + daemon.error + ')' : '') + '.';
+  return 'Daemon: running.';
+}
+
+async function pollQueue() {
+  try {
+    const res = await fetch('/api/queue');
+    const data = await res.json();
+    const statusEl = document.getElementById('daemon-status');
+    statusEl.textContent = daemonStatusText(data.daemon);
+    statusEl.className = data.daemon && data.daemon.alive ? 'alive' : 'stale';
+
+    const list = document.getElementById('queue-list');
+    if (!data.entries || data.entries.length === 0) {
+      list.innerHTML = '<div id="queue-empty">Queue is empty.</div>';
+    } else {
+      list.innerHTML = data.entries.map(e => {
+        const badge = e.result || (e.status || 'UNKNOWN').toUpperCase();
+        const extra = e.error ? ' - ' + e.error : '';
+        return '<div class="queue-item"><span class="hist-status ' + statusClass(badge) + '">' + badge + '</span>' +
+               '<div class="queue-task">' + (e.task || '') + extra + '</div></div>';
+      }).join('');
+    }
+  } catch (e) { /* retry next tick */ }
+  setTimeout(pollQueue, 3000);
+}
+
+document.getElementById('queue-add-btn').addEventListener('click', async () => {
+  const input = document.getElementById('queue-tasks-input');
+  const msg = document.getElementById('queue-msg');
+  const tasks = input.value;
+  if (!tasks.trim()) { msg.textContent = 'Enter at least one task first.'; msg.className = 'err'; return; }
+  try {
+    const res = await fetch('/api/queue', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({tasks}),
+    });
+    const data = await res.json();
+    if (!res.ok) { msg.textContent = 'Error: ' + (data.error || res.status); msg.className = 'err'; return; }
+    msg.textContent = 'Queued ' + data.count + ' task(s).'; msg.className = 'ok';
+    input.value = '';
+    pollQueue();
+  } catch (e) {
+    msg.textContent = 'Request failed: ' + e; msg.className = 'err';
+  }
+});
+
 function showMsg(text, cls) {
   const el = document.getElementById('submit-msg');
   el.textContent = text;
@@ -593,6 +682,23 @@ document.getElementById('hist-list').addEventListener('click', async (ev) => {
   });
 })();
 
+(function initQueueToggle() {
+  const queueEl = document.getElementById('queue');
+  const arrow = document.getElementById('queue-arrow');
+  let collapsed = false;
+  try { collapsed = localStorage.getItem('queueCollapsed') === '1'; } catch (e) {}
+  function apply() {
+    queueEl.classList.toggle('collapsed', collapsed);
+    arrow.textContent = collapsed ? '▸' : '▾';
+  }
+  apply();
+  document.getElementById('queue-toggle').addEventListener('click', () => {
+    collapsed = !collapsed;
+    apply();
+    try { localStorage.setItem('queueCollapsed', collapsed ? '1' : '0'); } catch (e) {}
+  });
+})();
+
 // Create/switch workspace (direct user request - "allow user to create a
 // new workspace, to start from scratch," then a follow-up: "don't ask
 // user to put the folder path manually - scan it and add options as
@@ -673,6 +779,7 @@ document.getElementById('workspace-new-btn').addEventListener('click', async () 
 
 pollEvents();
 pollHistory();
+pollQueue();
 </script>
 </body>
 </html>
@@ -771,6 +878,15 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
 
+        if parsed.path == "/api/queue":
+            status = orchestrator.read_daemon_status(self.repo)
+            daemon = {**status, "alive": orchestrator.daemon_is_alive(status)} if status else {"alive": False}
+            self._json({
+                "entries": list(reversed(orchestrator.all_queue_entries(self.repo))),
+                "daemon": daemon,
+            })
+            return
+
         self._json({"error": "not found"}, status=404)
 
     def do_POST(self):
@@ -793,6 +909,9 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/workspace/new":
             self._handle_workspace_new(body)
             return
+        if parsed.path == "/api/queue":
+            self._handle_queue_add(body)
+            return
         self._json({"error": "not found"}, status=404)
 
     def _handle_submit(self, body: dict) -> None:
@@ -804,6 +923,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         if mode not in ("agent", "chief"):
             self._json({"error": "mode must be 'agent' or 'chief'"}, status=400)
+            return
+
+        if orchestrator.daemon_is_alive(orchestrator.read_daemon_status(self.repo)):
+            self._json({"error": "the 24/7 daemon is running against this repo - add this "
+                                  "as a queue item in the queue panel instead of submitting "
+                                  "directly, or stop the daemon first (touch .agent-queue/STOP)"},
+                        status=409)
             return
 
         # Per-role model override (2026-08-27, inspired by OpenExecutive's
@@ -879,6 +1005,12 @@ class Handler(BaseHTTPRequestHandler):
         task = (body.get("task") or "").strip() or branch
         if not branch:
             self._json({"error": "branch is required"}, status=400)
+            return
+
+        if orchestrator.daemon_is_alive(orchestrator.read_daemon_status(self.repo)):
+            self._json({"error": "the 24/7 daemon is running against this repo - wait "
+                                  "for it to be idle or stop it first (touch "
+                                  ".agent-queue/STOP) before pushing from here"}, status=409)
             return
 
         repo = self.repo
@@ -1036,6 +1168,28 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": str(e)}, status=500)
         finally:
             RUN_LOCK.release()
+
+    def _handle_queue_add(self, body: dict) -> None:
+        """Appends tasks to .agent-queue for the 24/7 daemon (chief.py
+        --daemon, run separately via daemon-session.sh) to pick up - this
+        dashboard process never runs them itself. One task per line in a
+        textarea (also accepts a JSON list, for anything scripting this
+        endpoint directly). No RUN_LOCK needed: enqueue_tasks only writes
+        JSON files to .agent-queue, it never touches git state, so it can't
+        conflict with a run in progress in this process OR the daemon's."""
+        raw = body.get("tasks")
+        if isinstance(raw, str):
+            tasks = [t.strip() for t in raw.splitlines() if t.strip()]
+        elif isinstance(raw, list):
+            tasks = [str(t).strip() for t in raw if str(t).strip()]
+        else:
+            tasks = []
+        if not tasks:
+            self._json({"error": "tasks is required: a newline-separated string "
+                                  "or a list of strings"}, status=400)
+            return
+        paths = orchestrator.enqueue_tasks(self.repo, tasks)
+        self._json({"status": "queued", "count": len(paths)})
 
 
 def main():
