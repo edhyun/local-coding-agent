@@ -48,20 +48,29 @@ an issue and say so — that's the actual experiment.
   (you, on your machine) a second way in. Every push still requires an
   explicit click, same gate as the terminal's `--push` flag - nothing
   pushes automatically.
-- **`chief.py --daemon`** (via `daemon-session.sh`) — a 24/7 worker: give
-  it a to-do list (queue tasks from the dashboard's queue panel, or
-  `queue: t1 ; t2 ; ...` in `chief-session.sh`'s REPL) and it drains them
-  one at a time through the same Engineer/QA/PM pipeline, forever - it
-  never exits on an empty queue, it polls and waits for more. Commits only
-  and never auto-pushes; anything that can't get QA/PM approval after the
-  one bounded revision round is flagged `needs_human` in the queue and it
-  moves on to the next item rather than blocking on it. Stops only on an
-  explicit signal (`touch .agent-queue/STOP` in the repo, or Ctrl-C the
-  session) or if the environment itself is broken (e.g. OpenCode isn't
-  runnable) - a broken environment would fail every remaining item
-  identically, so it stops instead of hot-looping. The dashboard refuses
-  to run a submit/push of its own while the daemon's heartbeat looks alive
-  (a real cross-process check, not just a UI hint) - don't also run
+- **`chief.py --daemon`** — a 24/7 worker: give it a to-do list (queue
+  tasks from the dashboard's queue panel, or `queue: t1 ; t2 ; ...` in
+  `chief-session.sh`'s REPL) and it drains them one at a time through the
+  same Engineer/QA/PM pipeline, forever - it never exits on an empty
+  queue, it polls and waits for more. Commits only and never auto-pushes;
+  anything that can't get QA/PM approval after the one bounded revision
+  round is flagged `needs_human` in the queue and it moves on to the next
+  item rather than blocking on it. Start/stop it from the dashboard's
+  queue panel (a "Start daemon" button, and "Stop" / "Force stop" once
+  it's running) or from a terminal with `daemon-session.sh` - both land on
+  the same `daemon-<repo>` tmux session either way, so you can start it in
+  the browser and `tmux attach -t daemon-<repo>` to watch its raw log, or
+  vice versa. Graceful stop (`touch .agent-queue/STOP`, the dashboard's
+  "Stop" button, or Ctrl-C the tmux session) finishes whatever item is
+  currently running first; "Force stop" kills the tmux session outright,
+  which is safe - the interrupted item is left `running` and gets picked
+  back up on the next start, the same crash-resume path that already
+  handles the daemon dying unexpectedly. It also stops on its own if the
+  environment itself is broken (e.g. OpenCode isn't runnable) - a broken
+  environment would fail every remaining item identically, so it stops
+  instead of hot-looping. The dashboard refuses to run a submit/push of
+  its own while the daemon's heartbeat looks alive (a real cross-process
+  check via `os.kill(pid, 0)`, not just a UI hint) - don't also run
   `agent-session.sh`/`chief-session.sh` against the same repo while the
   daemon is active, same caveat as running any two of these at once.
 

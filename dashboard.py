@@ -29,6 +29,21 @@ NOT know about a tmux REPL (agent-session.sh / chief-session.sh) also
 running against the same repo at the same time - running both at once is
 still on you to avoid, same caveat as everywhere else in this project.
 
+`POST /api/daemon/start` / `POST /api/daemon/stop` (2026-09-03, direct user
+request: "I know it's running on tmux, but I want UI dashboard on
+browser") are a further step up in what this process can do: it now shells
+out to the `tmux` binary to spawn or kill a whole separate OS process (a
+`daemon-<repo>` tmux session running `chief.py --daemon`), not just spawn
+an in-process thread like submit/push do. Same no-auth trust boundary as
+everywhere else in this file, same click-triggered nothing-automatic
+principle - but worth naming explicitly since "start a background process
+on your machine" is a bigger action than "run a git branch operation".
+Start refuses (409) if orchestrator.daemon_is_alive() already says yes;
+stop defaults to the graceful STOP-flag signal (finishes whatever item is
+currently running first) with a `force` option that kills the tmux session
+outright - safe by the same D6 crash-resume logic that already handles a
+daemon dying mid-task, not a new risk.
+
 How it sees anything: orchestrator.py's invoke_opencode() (used by both
 run_task and chief.py's run_review) already writes every streamed model
 event to `<repo>/.agent-dashboard/events.jsonl`, tagged with a run_id,
@@ -41,6 +56,8 @@ would. History comes from the existing `agent-run-log.jsonl`.
 import argparse
 import html
 import json
+import shlex
+import subprocess
 import threading
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -129,6 +146,13 @@ PAGE = """<!doctype html>
                     margin-bottom: 10px; background: #23252c; color: #9a9dab; }
   #daemon-status.alive { background: #163a24; color: #7bd99a; }
   #daemon-status.stale { background: #3a1616; color: #ff8686; }
+  #daemon-controls { display: flex; gap: 6px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+  #daemon-controls select, #daemon-controls button {
+    background: #0f1014; border: 1px solid #2a2c34; color: #d8dade;
+    padding: 6px 10px; border-radius: 4px; font-family: inherit; font-size: 12px; cursor: pointer;
+  }
+  #daemon-start-btn { border-color: #2c4a72; color: #7fb2ff; }
+  #daemon-stop-btn, #daemon-force-stop-btn { border-color: #4a2020; color: #ff8686; }
   #queue-tasks-input { width: 100%; box-sizing: border-box; background: #0f1014;
                         border: 1px solid #2a2c34; color: #d8dade; padding: 7px 10px;
                         border-radius: 4px; font-family: inherit; font-size: 12px;
@@ -303,6 +327,12 @@ PAGE = """<!doctype html>
     <h2 id="queue-toggle">24/7 Queue <span id="queue-arrow">▾</span></h2>
     <div id="queue-body">
       <div id="daemon-status">checking daemon...</div>
+      <div id="daemon-controls">
+        <select id="daemon-model-select" title="Model used for all three roles (Engineer/QA/PM) when the daemon starts">__MODEL_OPTIONS_RELIABLE__</select>
+        <button type="button" id="daemon-start-btn">Start daemon</button>
+        <button type="button" id="daemon-stop-btn" style="display:none">Stop (after current item)</button>
+        <button type="button" id="daemon-force-stop-btn" style="display:none">Force stop</button>
+      </div>
       <textarea id="queue-tasks-input" rows="3" placeholder="One task per line - added to the queue for the daemon (chief.py --daemon / daemon-session.sh) to work through, not run by this page."></textarea>
       <button type="button" id="queue-add-btn">+ Add to queue</button>
       <div id="queue-msg"></div>
@@ -535,7 +565,12 @@ async function pollQueue() {
     const data = await res.json();
     const statusEl = document.getElementById('daemon-status');
     statusEl.textContent = daemonStatusText(data.daemon);
-    statusEl.className = data.daemon && data.daemon.alive ? 'alive' : 'stale';
+    const alive = !!(data.daemon && data.daemon.alive);
+    statusEl.className = alive ? 'alive' : 'stale';
+    document.getElementById('daemon-model-select').style.display = alive ? 'none' : 'inline-block';
+    document.getElementById('daemon-start-btn').style.display = alive ? 'none' : 'inline-block';
+    document.getElementById('daemon-stop-btn').style.display = alive ? 'inline-block' : 'none';
+    document.getElementById('daemon-force-stop-btn').style.display = alive ? 'inline-block' : 'none';
 
     const list = document.getElementById('queue-list');
     if (!data.entries || data.entries.length === 0) {
@@ -570,6 +605,34 @@ document.getElementById('queue-add-btn').addEventListener('click', async () => {
   } catch (e) {
     msg.textContent = 'Request failed: ' + e; msg.className = 'err';
   }
+});
+
+async function daemonControl(url, payload, pendingText) {
+  const msg = document.getElementById('queue-msg');
+  msg.textContent = pendingText; msg.className = '';
+  try {
+    const res = await fetch(url, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) { msg.textContent = 'Error: ' + (data.error || res.status); msg.className = 'err'; return; }
+    msg.textContent = 'Status: ' + data.status; msg.className = 'ok';
+  } catch (e) {
+    msg.textContent = 'Request failed: ' + e; msg.className = 'err';
+  }
+  pollQueue();
+}
+
+document.getElementById('daemon-start-btn').addEventListener('click', () => {
+  const model = document.getElementById('daemon-model-select').value;
+  daemonControl('/api/daemon/start', {model}, 'Starting daemon...');
+});
+document.getElementById('daemon-stop-btn').addEventListener('click', () => {
+  daemonControl('/api/daemon/stop', {}, 'Stop requested - finishing the current item first...');
+});
+document.getElementById('daemon-force-stop-btn').addEventListener('click', () => {
+  daemonControl('/api/daemon/stop', {force: true}, 'Force stopping...');
 });
 
 function showMsg(text, cls) {
@@ -912,6 +975,12 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/queue":
             self._handle_queue_add(body)
             return
+        if parsed.path == "/api/daemon/start":
+            self._handle_daemon_start(body)
+            return
+        if parsed.path == "/api/daemon/stop":
+            self._handle_daemon_stop(body)
+            return
         self._json({"error": "not found"}, status=404)
 
     def _handle_submit(self, body: dict) -> None:
@@ -1190,6 +1259,71 @@ class Handler(BaseHTTPRequestHandler):
             return
         paths = orchestrator.enqueue_tasks(self.repo, tasks)
         self._json({"status": "queued", "count": len(paths)})
+
+    def _daemon_session_name(self) -> str:
+        return f"daemon-{self.repo.name}"
+
+    def _handle_daemon_start(self, body: dict) -> None:
+        """Spawns the daemon as its own tmux session - same NAME convention
+        as daemon-session.sh ("daemon-<basename>") so attaching to it from
+        a terminal (`tmux attach -t daemon-<repo>`) or running
+        daemon-session.sh again both find the exact session this started,
+        rather than creating a second, colliding one. Runs as a real OS
+        process independent of this dashboard - stopping the dashboard (or
+        it crashing) does NOT stop the daemon, same as if you'd started it
+        from a terminal yourself."""
+        status = orchestrator.read_daemon_status(self.repo)
+        if orchestrator.daemon_is_alive(status):
+            self._json({"error": "daemon is already running"}, status=409)
+            return
+        model = body.get("model") or orchestrator.MODEL_QUEUED
+        if model not in set(orchestrator.AVAILABLE_MODELS):
+            self._json({"error": f"model must be one of {sorted(orchestrator.AVAILABLE_MODELS)}"},
+                        status=400)
+            return
+
+        name = self._daemon_session_name()
+        chief_path = Path(__file__).resolve().parent / "chief.py"
+        # Clears out a stale same-named session (e.g. left behind by an
+        # unclean shutdown) so `tmux new-session` below doesn't fail with
+        # "duplicate session" - harmless no-op if no such session exists.
+        subprocess.run(["tmux", "kill-session", "-t", name], capture_output=True)
+        cmd_str = (f"python3 {shlex.quote(str(chief_path))} --daemon "
+                   f"{shlex.quote(str(self.repo))} --model {shlex.quote(model)}")
+        try:
+            subprocess.run(
+                ["tmux", "new-session", "-d", "-s", name, "-c", str(self.repo), cmd_str],
+                check=True, capture_output=True, text=True,
+            )
+        except FileNotFoundError:
+            self._json({"error": "tmux is not installed or not on PATH"}, status=500)
+            return
+        except subprocess.CalledProcessError as e:
+            self._json({"error": f"failed to start tmux session: {e.stderr.strip()}"}, status=500)
+            return
+        self._json({"status": "started", "session": name, "model": model})
+
+    def _handle_daemon_stop(self, body: dict) -> None:
+        """Default is graceful: sets the STOP flag file the daemon already
+        polls for between queue items (see process_council_queue) - it
+        finishes whatever task is currently running first, same as
+        touching .agent-queue/STOP by hand. force=True kills the tmux
+        session outright instead, abandoning whatever the current item was
+        mid-doing - that's exactly the D6 crash-resume scenario
+        (checkout_task_branch discards uncommitted state, the queue entry
+        stays "running" and gets picked back up as the next item on the
+        daemon's next start), not a new risk this button introduces."""
+        status = orchestrator.read_daemon_status(self.repo)
+        if not orchestrator.daemon_is_alive(status):
+            self._json({"error": "daemon is not running"}, status=409)
+            return
+        if body.get("force"):
+            subprocess.run(["tmux", "kill-session", "-t", self._daemon_session_name()],
+                            capture_output=True)
+            self._json({"status": "killed"})
+            return
+        orchestrator.request_daemon_stop(self.repo)
+        self._json({"status": "stop_requested"})
 
 
 def main():
