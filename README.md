@@ -147,6 +147,23 @@ coverage is open, tracked work (not included in this repo's tests yet).
   (avoids contending for one machine's local inference).
 - The dashboard has no authentication. It binds to `127.0.0.1` by default;
   don't bind it wider unless you understand that tradeoff.
+- **Local models are not Claude-Code-quality, and no amount of prompting
+  here closes that gap.** `qwen3-coder:30b` and `qwen3.8-27b-mlx`/
+  `qwen3:32b-q8_0` are two orders of magnitude smaller than a frontier
+  model, quantized, and less thoroughly trained on agentic tool use - this
+  project's whole design (git-diff verification, the QA/PM review pass,
+  never trusting the model's own claim) exists to compensate for that with
+  process, not to pretend it isn't true. Concrete levers if you want to
+  push closer to frontier quality: prefer `qwen3:32b-q8_0` over the MLX
+  27B model for anything correctness-sensitive (less quantization loss,
+  slower); the `-cloud` tagged models in `AVAILABLE_MODELS`
+  (`qwen3-coder:480b-cloud`, `deepseek-v3.1:671b-cloud`) route through
+  Ollama's hosted inference instead of this machine - closer to frontier
+  scale, no longer actually "local"; every OpenCode invocation already
+  runs under a custom low-temperature agent (`AGENT_TEMPERATURE = 0.1` in
+  `orchestrator.py`) since coding wants near-deterministic sampling. None
+  of this makes a 30B model reason like Claude - it narrows the gap where
+  the gap is prompting/config, not raw scale.
 
 ## License
 

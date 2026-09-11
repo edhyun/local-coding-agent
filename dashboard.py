@@ -853,8 +853,22 @@ def _model_options_html(default: str) -> str:
     """Builds <option> tags from orchestrator.AVAILABLE_MODELS - adding a
     model there (e.g. a newly-pulled local one) makes it show up in every
     dropdown at once, instead of needing 5 hardcoded option lists kept in
-    sync by hand."""
-    labels = {orchestrator.MODEL_INTERACTIVE: "fast", orchestrator.MODEL_QUEUED: "reliable"}
+    sync by hand.
+
+    Labels are a direct answer to a real user question ("why is my local
+    qwen worse than claude code, how do I close the gap") - qwen3:32b-q8_0
+    is less quantized than qwen3.8-27b-mlx and should be reached for when
+    correctness matters more than speed; the "-cloud" tags are Ollama's
+    hosted models (real inference happens off this machine, not "local"
+    despite the ollama/ prefix) offered as the most direct way to get
+    closer to frontier-model quality, at that privacy/latency cost."""
+    labels = {
+        orchestrator.MODEL_INTERACTIVE: "fast",
+        orchestrator.MODEL_QUEUED: "reliable",
+        orchestrator.MODEL_QWEN32B: "most reliable local, slowest",
+        orchestrator.MODEL_CLOUD_CODER: "cloud - not local, closer to frontier quality",
+        orchestrator.MODEL_CLOUD_DEEPSEEK: "cloud - not local, closer to frontier quality",
+    }
     parts = []
     for m in orchestrator.AVAILABLE_MODELS:
         label = labels.get(m, "extra")

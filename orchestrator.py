@@ -71,10 +71,43 @@ MODEL_QWEN32B = "ollama/qwen3:32b-q8_0"
 # for the actual build.
 MODEL_ASSISTANT = "ollama/qwen3:8b"
 
+# Ollama's hosted "-cloud" tags (2026-09-11, direct user request: "how do
+# I make my local qwen model as capable as claude code" - answered plainly
+# that a 30B local model can't match a frontier model through prompting
+# alone, and that trying a much larger model is the most direct lever
+# available). These route through the SAME local Ollama endpoint
+# (http://127.0.0.1:11434) as every other "ollama/..." model here, but the
+# actual inference runs on Ollama's cloud infrastructure, not this
+# machine - "local" only up to the API call. Requires `ollama pull
+# <tag>` and an Ollama account signed in; not verified end-to-end in this
+# session (no live test run against these specific tags), unlike every
+# other model constant here.
+MODEL_CLOUD_CODER = "ollama/qwen3-coder:480b-cloud"
+MODEL_CLOUD_DEEPSEEK = "ollama/deepseek-v3.1:671b-cloud"
+
 # Every model the dashboard's dropdowns and _handle_submit's validation
 # know about. Add a model here (and only here) to make it selectable
 # everywhere at once, instead of updating multiple hardcoded option lists.
-AVAILABLE_MODELS = [MODEL_INTERACTIVE, MODEL_QUEUED, MODEL_QWEN32B, MODEL_ASSISTANT]
+AVAILABLE_MODELS = [MODEL_INTERACTIVE, MODEL_QUEUED, MODEL_QWEN32B, MODEL_ASSISTANT,
+                     MODEL_CLOUD_CODER, MODEL_CLOUD_DEEPSEEK]
+
+# Custom OpenCode agent (2026-09-11, same user request as above - "how do
+# I make my local model as capable as claude code"): coding wants
+# low-temperature, near-deterministic sampling, and OpenCode's default
+# agents don't set one explicitly. Verified live against a scratch repo
+# that OpenCode actually resolves this custom agent name from a
+# project-local opencode.jsonc's "agent" block and records it against the
+# session (`opencode.db`'s message row showed "agent":
+# "local-coding-agent") - NOT independently verified that the temperature
+# value itself reaches the underlying model API call (would require
+# intercepting the raw HTTP request to Ollama/LM Studio, not done here);
+# the schema at https://opencode.ai/config.json explicitly types
+# AgentConfig.temperature as a number, so applying it is what the schema
+# says this field is for. 0.1, not 0 - a few local models degenerate into
+# repetition loops at exactly 0 temperature; 0.1 stays close to
+# deterministic without that failure mode.
+AGENT_NAME = "local-coding-agent"
+AGENT_TEMPERATURE = 0.1
 
 OPENCODE_PERMISSION_CONFIG = {
     "$schema": "https://opencode.ai/config.json",
@@ -243,6 +276,7 @@ def ensure_permission_config(repo: Path, profile: str = "engineer") -> None:
     config = {
         "$schema": "https://opencode.ai/config.json",
         "permission": PERMISSION_PROFILES[profile],
+        "agent": {AGENT_NAME: {"temperature": AGENT_TEMPERATURE}},
     }
     config_path.write_text(json.dumps(config, indent=2) + "\n")
 
@@ -381,7 +415,7 @@ def invoke_opencode(repo: Path, task: str, model: str, role: str = "Engineer",
         })
     try:
         proc = subprocess.Popen(
-            ["opencode", "run", task, "-m", model, "--format", "json"],
+            ["opencode", "run", task, "-m", model, "--agent", AGENT_NAME, "--format", "json"],
             cwd=repo,
             env=env,
             stdout=subprocess.PIPE,

@@ -92,6 +92,21 @@ class TestPermissionProfiles(unittest.TestCase):
         config = json.loads((self.repo / "opencode.jsonc").read_text())
         self.assertEqual(config["permission"]["edit"], "allow")
 
+    def test_writes_low_temperature_custom_agent(self):
+        """Real user question (2026-09-11): "how do I make my local qwen
+        as capable as claude code" - one concrete lever is coding wanting
+        low-temperature sampling, which OpenCode's default agents don't
+        set. Verifies the config this project writes actually declares
+        it, for both permission profiles (a reviewer verdict benefits from
+        low temperature exactly as much as an engineer's diff does)."""
+        for profile in ("engineer", "reviewer"):
+            orchestrator.ensure_permission_config(self.repo, profile=profile)
+            config = json.loads((self.repo / "opencode.jsonc").read_text())
+            self.assertEqual(
+                config["agent"][orchestrator.AGENT_NAME]["temperature"],
+                orchestrator.AGENT_TEMPERATURE,
+            )
+
 
 class TestGitExclude(unittest.TestCase):
     def setUp(self):
