@@ -51,6 +51,21 @@ role (Engineer/QA/PM), and round. This process tails that file for the
 live feed - no in-process pub/sub needed even for runs THIS process itself
 spawns, since they write to the same file the same way a REPL-spawned run
 would. History comes from the existing `agent-run-log.jsonl`.
+
+UI redesign (2026-09-12, direct user request: "the UI dashboard quality is
+not there yet... make it more intuitive"). The prior layout put every
+control (workspace switcher, mode select, 3 model dropdowns, 5 reviewer
+chips + custom fields, push checkbox) on screen at once with equal visual
+weight, and split Live/History/Queue into 3 permanently-visible narrow
+columns - a lot to parse before doing anything, and the 24/7 daemon's
+status was buried behind a small collapsed arrow easy to never notice.
+User picked the bigger-rethink direction (a preview mockup comparison, not
+a guess): one persistent top status bar (activity + repo + daemon, always
+visible, no hunting), model/reviewer/push settings tucked behind a
+collapsed "Advanced" toggle (most submissions just need a task and the
+defaults), and a single-focus tab strip (Live / History / Queue) instead
+of 3 fixed columns. All backend endpoints are unchanged - this is a
+frontend-only rewrite of the PAGE template.
 """
 
 import argparse
@@ -86,17 +101,36 @@ PAGE = """<!doctype html>
     margin: 0; font-family: -apple-system, "SF Mono", Menlo, monospace;
     background: #14151a; color: #d8dade; font-size: 13px;
   }
-  header {
-    padding: 12px 18px; border-bottom: 1px solid #2a2c34;
+
+  /* ---- persistent top status bar (2026-09-12: always know activity,
+     repo, and daemon state without clicking anything) ---- */
+  #topbar {
+    position: sticky; top: 0; z-index: 20; background: #17181e;
+    border-bottom: 1px solid #2a2c34; padding: 9px 18px;
     display: flex; justify-content: space-between; align-items: center;
+    flex-wrap: wrap; gap: 8px 16px;
   }
-  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
-  header .repo { color: #7c7f8a; font-size: 12px; display: flex; align-items: center; gap: 8px; }
+  #topbar-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  #brand { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; color: #6a6d78;
+           text-transform: uppercase; white-space: nowrap; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #3a3d47; flex-shrink: 0; }
+  #topbar-left.live .dot { background: #7bd99a; animation: pulse 1.2s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+  #active-text { color: #9a9dab; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #topbar-left.live #active-text { color: #e5e7ee; }
+  #topbar-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  #repo-path { color: #7c7f8a; font-size: 12px; }
+  #daemon-pill {
+    font-size: 11px; padding: 2px 9px; border-radius: 10px;
+    background: #23252c; color: #9a9dab; white-space: nowrap;
+  }
+  #daemon-pill.alive { background: #163a24; color: #7bd99a; }
   #workspace-toggle {
     background: none; border: 1px solid #2a2c34; color: #7c7f8a;
-    padding: 2px 8px; border-radius: 10px; font-size: 10px; cursor: pointer; font-family: inherit;
+    padding: 3px 10px; border-radius: 10px; font-size: 11px; cursor: pointer; font-family: inherit;
   }
   #workspace-toggle:hover { color: #9a9dab; border-color: #3a3d47; }
+
   #workspace-bar {
     padding: 8px 18px; border-bottom: 1px solid #2a2c34; background: #17181e;
     display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
@@ -117,31 +151,127 @@ PAGE = """<!doctype html>
   #workspace-msg { font-size: 11px; }
   #workspace-msg.err { color: #ff8686; }
   #workspace-msg.ok { color: #7bd99a; }
-  #active-banner {
-    padding: 8px 18px; background: #1b1c22; border-bottom: 1px solid #2a2c34;
-    font-size: 12px; color: #6a6d78; display: flex; align-items: center; gap: 8px;
+
+  /* ---- primary action: the one thing most visits are here to do ---- */
+  #primary-bar {
+    padding: 12px 18px 6px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
   }
-  #active-banner.live { color: #e5e7ee; }
-  #active-banner .dot {
-    width: 8px; height: 8px; border-radius: 50%; background: #3a3d47; flex-shrink: 0;
+  #primary-bar select, #goal-input, #submit-btn {
+    background: #0f1014; border: 1px solid #2a2c34; color: #d8dade;
+    padding: 8px 10px; border-radius: 4px; font-family: inherit; font-size: 13px;
   }
-  #active-banner.live .dot { background: #7bd99a; animation: pulse 1.2s infinite; }
-  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
-  .model-tag { font-size: 10px; color: #6a6d78; margin-left: 6px; }
-  #layout { display: flex; height: calc(100vh - 105px); }
-  #feed, #history, #queue { overflow-y: auto; padding: 14px 18px; }
-  #feed { flex: 2; border-right: 1px solid #2a2c34; }
-  #history { flex: 1; min-width: 280px; border-right: 1px solid #2a2c34; transition: min-width 0.15s, flex 0.15s; }
-  #history.collapsed { flex: 0 0 auto; min-width: 0; width: 140px; overflow: hidden; }
-  #history.collapsed #hist-list { display: none; }
-  #queue { flex: 1; min-width: 280px; transition: min-width 0.15s, flex 0.15s; }
-  #queue.collapsed { flex: 0 0 auto; min-width: 0; width: 140px; overflow: hidden; }
-  #queue.collapsed #queue-body { display: none; }
-  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
-       color: #7c7f8a; margin: 0 0 10px; }
-  #history-toggle, #queue-toggle { cursor: pointer; user-select: none; display: flex;
-                     align-items: center; gap: 4px; }
-  #history-toggle:hover, #queue-toggle:hover { color: #9a9dab; }
+  #goal-input { flex: 1; min-width: 240px; resize: none; overflow-y: auto; max-height: 200px; line-height: 1.4; }
+  #submit-btn { background: #1c3352; border-color: #2c4a72; color: #7fb2ff; font-weight: 600; cursor: pointer; }
+  #submit-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  #mode-caption { padding: 2px 18px 8px; font-size: 11px; color: #6a6d78; line-height: 1.5; }
+  #submit-msg { padding: 0 18px; font-size: 12px; min-height: 18px; }
+  #submit-msg.err { color: #ff8686; }
+  #submit-msg.ok { color: #7bd99a; }
+
+  /* ---- advanced: model pickers, extra reviewers, push - collapsed by
+     default (2026-09-12: most submissions just need a task + the
+     defaults; these are real settings, not something to parse every time) ---- */
+  #advanced-toggle {
+    margin: 0 18px 8px; background: none; border: none; color: #7c7f8a;
+    font-size: 11px; cursor: pointer; font-family: inherit; padding: 4px 0;
+  }
+  #advanced-toggle:hover { color: #9a9dab; }
+  #advanced-panel { padding: 4px 18px 12px; border-bottom: 1px solid #2a2c34; background: #17181e; }
+  #model-bar { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 10px; }
+  .model-group { display: flex; gap: 12px; flex-wrap: wrap; }
+  .model-group label { font-size: 11px; color: #7c7f8a; display: flex; align-items: center; gap: 4px; }
+  .model-group select {
+    background: #0f1014; border: 1px solid #2a2c34; color: #d8dade;
+    padding: 4px 6px; border-radius: 4px; font-family: inherit; font-size: 11px;
+  }
+  #role-presets { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 6px; }
+  #role-presets-label { font-size: 11px; color: #7c7f8a; margin-right: 2px; }
+  .role-chip {
+    background: #0f1014; border: 1px solid #2a2c34; color: #9a9dab;
+    padding: 4px 9px; border-radius: 12px; font-family: inherit; font-size: 11px;
+    cursor: pointer;
+  }
+  .role-chip:hover { border-color: #3a3d47; }
+  .role-chip.active { background: #2e1c3a; border-color: #4a2e5c; color: #c99fe0; }
+  #custom-role-fields { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  #advanced-panel input[type=text] {
+    background: #0f1014; border: 1px solid #2a2c34; color: #d8dade;
+    padding: 5px 8px; border-radius: 4px; font-family: inherit; font-size: 11px;
+  }
+  #custom-role-name { flex: 0 0 220px; }
+  #custom-role-instructions { flex: 1; min-width: 260px; }
+  #advanced-panel select { background: #0f1014; border: 1px solid #2a2c34; color: #d8dade;
+    padding: 5px 6px; border-radius: 4px; font-family: inherit; font-size: 11px; }
+  #push-row { font-size: 12px; color: #9a9dab; display: flex; align-items: center; gap: 6px; }
+
+  /* ---- tab strip + single-focus content (2026-09-12: replaces 3
+     permanently-visible narrow columns) ---- */
+  #tabs { display: flex; gap: 2px; padding: 0 18px; border-bottom: 1px solid #2a2c34; background: #14151a; }
+  .tab-btn {
+    background: none; border: none; border-bottom: 2px solid transparent; color: #7c7f8a;
+    font-family: inherit; font-size: 12px; padding: 10px 14px; cursor: pointer;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .tab-btn:hover { color: #9a9dab; }
+  .tab-btn.active { color: #d8dade; border-bottom-color: #7fb2ff; }
+  .tab-badge {
+    background: #3a2e14; color: #e5b567; font-size: 10px; font-weight: 700;
+    padding: 1px 6px; border-radius: 8px; display: none;
+  }
+  #tab-content { height: calc(100vh - 190px); overflow: hidden; }
+  .tab-panel { display: none; height: 100%; overflow-y: auto; padding: 14px 18px; }
+  .tab-panel.active { display: block; }
+  #empty, #queue-empty { color: #6a6d78; padding: 20px 0; }
+
+  /* ---- live feed: each run leads with a plain-English headline, raw
+     tool-call trace tucked behind "steps" (2026-09-12: the old default
+     was a wall of bash/glob/read lines before anything readable) ---- */
+  .run { margin-bottom: 18px; border: 1px solid #23252c; border-radius: 6px; overflow: hidden; }
+  .run-head { padding: 6px 10px; background: #1b1c22; font-size: 11px; color: #9a9dab;
+              display: flex; justify-content: space-between; }
+  .role-block { padding: 8px 10px; border-top: 1px solid #23252c; }
+  .role-block-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+  .role-label { display: inline-block; font-weight: 700; font-size: 11px;
+                padding: 1px 6px; border-radius: 3px; }
+  .role-Engineer { background: #1c3352; color: #7fb2ff; }
+  .role-QA { background: #3a2e14; color: #e5b567; }
+  .role-PM { background: #163a24; color: #7bd99a; }
+  .role-Assistant { background: #2a2c34; color: #b7bac4; }
+  .role-Custom { background: #2e1c3a; color: #c99fe0; }
+  .timer { font-size: 10px; color: #6a6d78; }
+  .role-active { background: rgba(255,255,255,0.03); }
+  .role-active .role-label { box-shadow: 0 0 0 1px currentColor; animation: pulse 1.2s infinite; }
+  .steps-toggle {
+    margin-left: auto; background: none; border: 1px solid #2a2c34; color: #7c7f8a;
+    font-size: 10px; padding: 2px 8px; border-radius: 8px; cursor: pointer; font-family: inherit;
+  }
+  .steps-toggle:hover { color: #9a9dab; border-color: #3a3d47; }
+  .headline { color: #d8dade; line-height: 1.4; white-space: pre-wrap; word-break: break-word; }
+  .line { padding: 1px 0; color: #8b8ea0; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+  .line.err { color: #ff8686; }
+  .end-status { font-weight: 600; }
+  .model-tag { font-size: 10px; color: #6a6d78; }
+
+  /* ---- history / queue lists: task text is the primary line, branch
+     name (often long, hash-suffixed) is secondary/muted, not the other
+     way around (2026-09-12) ---- */
+  .hist-item, .queue-item { padding: 8px 0; border-bottom: 1px solid #23252c; }
+  .hist-status, .queue-status { font-weight: 700; font-size: 11px; padding: 1px 6px; border-radius: 3px; cursor: help; }
+  .st-APPROVED, .st-COMMITTED, .st-PR_OPENED, .st-ANSWERED, .st-done { background: #163a24; color: #7bd99a; }
+  .st-BLOCKED_GATE_FAIL, .st-PR_FAILED, .st-NEEDS_HUMAN, .st-REVISION_FAILED, .st-ENGINEER_BLOCKED, .st-FAILED, .st-failed { background: #3a1616; color: #ff8686; }
+  .st-ESCALATED, .st-REFUSED_DIRTY { background: #3a2e14; color: #e5b567; }
+  .st-NO_CHANGES, .st-ENGINEER_NO_CHANGES, .st-PENDING, .st-pending { background: #23252c; color: #9a9dab; }
+  .st-RUNNING, .st-running { background: #1c3352; color: #7fb2ff; }
+  .hist-task, .queue-task { color: #d8dade; margin-top: 4px; }
+  .hist-branch { color: #6a6d78; font-size: 11px; margin-top: 2px; font-family: monospace; }
+  .hist-time { color: #6a6d78; font-size: 11px; margin-top: 3px; }
+  .push-btn {
+    margin-top: 5px; background: #1c3352; border: 1px solid #2c4a72; color: #7fb2ff;
+    padding: 3px 8px; border-radius: 3px; font-size: 11px; cursor: pointer; font-family: inherit;
+  }
+  .push-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* ---- queue tab: daemon controls ---- */
   #daemon-status { font-size: 11px; padding: 6px 8px; border-radius: 4px;
                     margin-bottom: 10px; background: #23252c; color: #9a9dab; }
   #daemon-status.alive { background: #163a24; color: #7bd99a; }
@@ -163,184 +293,124 @@ PAGE = """<!doctype html>
   #queue-msg { font-size: 11px; margin: 6px 0; min-height: 14px; }
   #queue-msg.err { color: #ff8686; }
   #queue-msg.ok { color: #7bd99a; }
-  .queue-item { padding: 8px 0; border-bottom: 1px solid #23252c; }
-  .queue-task { color: #d8dade; margin-top: 3px; font-size: 12px; }
-  .st-PENDING { background: #23252c; color: #9a9dab; }
-  .st-RUNNING { background: #1c3352; color: #7fb2ff; }
-  .st-FAILED { background: #3a1616; color: #ff8686; }
-  #submit-bar {
-    padding: 10px 18px; border-bottom: 1px solid #2a2c34; background: #17181e;
-    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
-  }
-  #submit-bar input[type=text], #goal-input {
-    flex: 1; min-width: 240px; background: #0f1014; border: 1px solid #2a2c34;
-    color: #d8dade; padding: 7px 10px; border-radius: 4px; font-family: inherit; font-size: 13px;
-  }
-  #goal-input { resize: none; overflow-y: auto; max-height: 200px; line-height: 1.4; }
-  #submit-bar select, #submit-bar button {
-    background: #0f1014; border: 1px solid #2a2c34; color: #d8dade;
-    padding: 7px 10px; border-radius: 4px; font-family: inherit; font-size: 12px; cursor: pointer;
-  }
-  #submit-bar button { background: #1c3352; border-color: #2c4a72; color: #7fb2ff; font-weight: 600; }
-  #submit-bar button:disabled { opacity: 0.4; cursor: not-allowed; }
-  #submit-bar label { font-size: 12px; color: #9a9dab; display: flex; align-items: center; gap: 4px; }
-  #mode-caption {
-    padding: 0 18px 10px; font-size: 11px; color: #6a6d78; background: #17181e;
-    border-bottom: 1px solid #2a2c34; line-height: 1.5;
-  }
-  #model-bar {
-    padding: 0 18px 10px; border-bottom: 1px solid #2a2c34; background: #17181e;
-    display: flex; gap: 14px; flex-wrap: wrap;
-  }
-  .model-group { display: flex; gap: 12px; }
-  .model-group label { font-size: 11px; color: #7c7f8a; display: flex; align-items: center; gap: 4px; }
-  .model-group select {
-    background: #0f1014; border: 1px solid #2a2c34; color: #d8dade;
-    padding: 4px 6px; border-radius: 4px; font-family: inherit; font-size: 11px;
-  }
-  #custom-role-bar {
-    padding: 8px 18px; border-bottom: 1px solid #2a2c34; background: #17181e;
-  }
-  #role-presets { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 6px; }
-  #role-presets-label { font-size: 11px; color: #7c7f8a; margin-right: 2px; }
-  .role-chip {
-    background: #0f1014; border: 1px solid #2a2c34; color: #9a9dab;
-    padding: 4px 9px; border-radius: 12px; font-family: inherit; font-size: 11px;
-    cursor: pointer;
-  }
-  .role-chip:hover { border-color: #3a3d47; }
-  .role-chip.active { background: #2e1c3a; border-color: #4a2e5c; color: #c99fe0; }
-  #custom-role-fields { display: flex; gap: 8px; flex-wrap: wrap; }
-  #custom-role-bar input[type=text] {
-    background: #0f1014; border: 1px solid #2a2c34; color: #d8dade;
-    padding: 5px 8px; border-radius: 4px; font-family: inherit; font-size: 11px;
-  }
-  #custom-role-name { flex: 0 0 220px; }
-  #custom-role-instructions { flex: 1; min-width: 260px; }
-  #custom-role-bar select {
-    background: #0f1014; border: 1px solid #2a2c34; color: #d8dade;
-    padding: 5px 6px; border-radius: 4px; font-family: inherit; font-size: 11px;
-  }
-  #submit-msg { padding: 0 18px; font-size: 12px; min-height: 18px; }
-  #submit-msg.err { color: #ff8686; }
-  #submit-msg.ok { color: #7bd99a; }
-  .run { margin-bottom: 18px; border: 1px solid #23252c; border-radius: 6px; overflow: hidden; }
-  .run-head { padding: 6px 10px; background: #1b1c22; font-size: 11px; color: #9a9dab;
-              display: flex; justify-content: space-between; }
-  .role-block { padding: 8px 10px; border-top: 1px solid #23252c; }
-  .role-label { display: inline-block; font-weight: 700; font-size: 11px;
-                padding: 1px 6px; border-radius: 3px; margin-bottom: 6px; }
-  .role-Engineer { background: #1c3352; color: #7fb2ff; }
-  .role-QA { background: #3a2e14; color: #e5b567; }
-  .role-PM { background: #163a24; color: #7bd99a; }
-  .role-Assistant { background: #2a2c34; color: #b7bac4; }
-  .role-Custom { background: #2e1c3a; color: #c99fe0; }
-  .timer { font-size: 10px; color: #6a6d78; margin-left: 6px; }
-  .role-active { background: rgba(255,255,255,0.03); }
-  .role-active .role-label { box-shadow: 0 0 0 1px currentColor; animation: pulse 1.2s infinite; }
-  .line { padding: 1px 0; color: #b7bac4; white-space: pre-wrap; word-break: break-word; }
-  .line.tool { color: #8b8ea0; }
-  .line.err { color: #ff8686; }
-  .end-status { margin-top: 4px; font-size: 11px; color: #7c7f8a; }
-  .hist-item { padding: 8px 0; border-bottom: 1px solid #23252c; }
-  .hist-status { font-weight: 700; font-size: 11px; padding: 1px 6px; border-radius: 3px; }
-  .st-APPROVED, .st-COMMITTED, .st-PR_OPENED, .st-ANSWERED { background: #163a24; color: #7bd99a; }
-  .st-BLOCKED_GATE_FAIL, .st-PR_FAILED, .st-NEEDS_HUMAN, .st-REVISION_FAILED, .st-ENGINEER_BLOCKED { background: #3a1616; color: #ff8686; }
-  .st-ESCALATED, .st-REFUSED_DIRTY { background: #3a2e14; color: #e5b567; }
-  .st-NO_CHANGES, .st-ENGINEER_NO_CHANGES { background: #23252c; color: #9a9dab; }
-  .hist-task { color: #d8dade; margin-top: 3px; }
-  .hist-time { color: #6a6d78; font-size: 11px; margin-top: 3px; }
-  .push-btn {
-    margin-top: 5px; background: #1c3352; border: 1px solid #2c4a72; color: #7fb2ff;
-    padding: 3px 8px; border-radius: 3px; font-size: 11px; cursor: pointer; font-family: inherit;
-  }
-  .push-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-  #empty { color: #6a6d78; padding: 20px 0; }
 </style>
 </head>
 <body>
-<header>
-  <h1>Chief of Staff - live monitor</h1>
-  <span class="repo">
-    <span id="repo-path">__REPO_PATH__</span>
-    <button type="button" id="workspace-toggle">change</button>
-  </span>
-</header>
+<div id="topbar">
+  <div id="topbar-left">
+    <span id="brand">Chief of Staff</span>
+    <span class="dot"></span>
+    <span id="active-text">Idle</span>
+  </div>
+  <div id="topbar-right">
+    <span id="repo-path" title="__REPO_PATH__">__REPO_PATH__</span>
+    <span id="daemon-pill">checking daemon...</span>
+    <button type="button" id="workspace-toggle">change repo</button>
+  </div>
+</div>
 <div id="workspace-bar" style="display:none">
   <span id="workspace-label" title="Most recently active sibling projects in the same parent folder">switch to (recent):</span>
   <span id="workspace-options"><span id="workspace-loading">loading...</span></span>
   <button type="button" id="workspace-new-btn">+ New workspace</button>
   <span id="workspace-msg"></span>
 </div>
-<div id="submit-bar">
+
+<div id="primary-bar">
   <select id="mode-select">
     <option value="chief">General (team review: Engineer + QA + PM)</option>
     <option value="agent">Build (fast, no review)</option>
   </select>
   <textarea id="goal-input" rows="1" placeholder="Describe the task or goal... (Enter to submit, Shift+Enter for a new line)"></textarea>
-  <label title="Once QA/PM (and any custom reviewer) all say APPROVE, push the branch to GitHub and open a draft PR automatically - the same thing the 'Push + open PR' button in History does, just pre-approved before you see the result. Leave unchecked to review it yourself first and push manually.">
-    <input type="checkbox" id="push-checkbox"> auto-push when approved
-  </label>
   <button id="submit-btn">Submit</button>
 </div>
 <div id="mode-caption">
-  Both verify success by git diff, never by the model's own claim, and both answer plain
-  questions directly (no branch, no commit) instead of forcing them through a build. "Build" is
-  one pass - you review the result yourself. "General" adds two more passes (QA, then PM) that
-  must both say APPROVE before a build is done, with one bounded revision round if either
-  objects - slower, but catches problems before you'd otherwise have to notice them.
+  Both verify success by git diff, never the model's own claim. "General" adds QA + PM review
+  (one bounded revision round if either objects) before it's done; "Build" is one fast pass you
+  review yourself. A plain question gets answered directly - no branch, no commit.
 </div>
-<div id="model-bar">
-  <div id="model-agent" class="model-group" style="display:none">
-    <label>model: <select id="model-agent-select">__MODEL_OPTIONS_FAST__</select></label>
-  </div>
-  <div id="model-chief" class="model-group">
-    <label>Engineer: <select id="model-eng-select">__MODEL_OPTIONS_FAST__</select></label>
-    <label>QA: <select id="model-qa-select">__MODEL_OPTIONS_RELIABLE__</select></label>
-    <label>PM: <select id="model-pm-select">__MODEL_OPTIONS_RELIABLE__</select></label>
-  </div>
-</div>
-<div id="custom-role-bar">
-  <div id="role-presets">
-    <span id="role-presets-label">extra reviewers:</span>
-    <button type="button" class="role-chip" data-role="uiux">+ UI/UX Designer</button>
-    <button type="button" class="role-chip" data-role="security">+ Security</button>
-    <button type="button" class="role-chip" data-role="performance">+ Performance</button>
-    <button type="button" class="role-chip" data-role="accessibility">+ Accessibility</button>
-    <button type="button" class="role-chip" data-role="docs">+ Docs</button>
-    <select id="model-custom-select" title="Model used for all extra reviewers (presets and custom)">__MODEL_OPTIONS_RELIABLE__</select>
-  </div>
-  <div id="custom-role-fields">
-    <input type="text" id="custom-role-name" placeholder="Or a custom role name, e.g. Data Privacy Reviewer">
-    <input type="text" id="custom-role-instructions" placeholder="What should they specifically check?">
-  </div>
-</div>
-<div id="submit-msg"></div>
-<div id="active-banner"><span class="dot"></span><span id="active-text">Idle - nothing running</span></div>
-<div id="layout">
-  <div id="feed"><h2>Live feed</h2><div id="runs"></div></div>
-  <div id="history">
-    <h2 id="history-toggle">History <span id="history-arrow">▾</span></h2>
-    <div id="hist-list"><div id="empty">No runs yet.</div></div>
-  </div>
-  <div id="queue">
-    <h2 id="queue-toggle">24/7 Queue <span id="queue-arrow">▾</span></h2>
-    <div id="queue-body">
-      <div id="daemon-status">checking daemon...</div>
-      <div id="daemon-controls">
-        <select id="daemon-model-select" title="Model used for all three roles (Engineer/QA/PM) when the daemon starts">__MODEL_OPTIONS_RELIABLE__</select>
-        <button type="button" id="daemon-start-btn">Start daemon</button>
-        <button type="button" id="daemon-stop-btn" style="display:none">Stop (after current item)</button>
-        <button type="button" id="daemon-force-stop-btn" style="display:none">Force stop</button>
-      </div>
-      <textarea id="queue-tasks-input" rows="3" placeholder="One task per line - added to the queue for the daemon (chief.py --daemon / daemon-session.sh) to work through, not run by this page."></textarea>
-      <button type="button" id="queue-add-btn">+ Add to queue</button>
-      <div id="queue-msg"></div>
-      <div id="queue-list"><div id="queue-empty">Queue is empty.</div></div>
+<button type="button" id="advanced-toggle">&#9656; Advanced (models, extra reviewers, push)</button>
+<div id="advanced-panel" style="display:none">
+  <div id="model-bar">
+    <div id="model-agent" class="model-group" style="display:none">
+      <label>model: <select id="model-agent-select">__MODEL_OPTIONS_FAST__</select></label>
+    </div>
+    <div id="model-chief" class="model-group">
+      <label>Engineer: <select id="model-eng-select">__MODEL_OPTIONS_FAST__</select></label>
+      <label>QA: <select id="model-qa-select">__MODEL_OPTIONS_RELIABLE__</select></label>
+      <label>PM: <select id="model-pm-select">__MODEL_OPTIONS_RELIABLE__</select></label>
     </div>
   </div>
+  <div id="custom-role-bar">
+    <div id="role-presets">
+      <span id="role-presets-label">extra reviewers:</span>
+      <button type="button" class="role-chip" data-role="uiux">+ UI/UX Designer</button>
+      <button type="button" class="role-chip" data-role="security">+ Security</button>
+      <button type="button" class="role-chip" data-role="performance">+ Performance</button>
+      <button type="button" class="role-chip" data-role="accessibility">+ Accessibility</button>
+      <button type="button" class="role-chip" data-role="docs">+ Docs</button>
+      <select id="model-custom-select" title="Model used for all extra reviewers (presets and custom)">__MODEL_OPTIONS_RELIABLE__</select>
+    </div>
+    <div id="custom-role-fields">
+      <input type="text" id="custom-role-name" placeholder="Or a custom role name, e.g. Data Privacy Reviewer">
+      <input type="text" id="custom-role-instructions" placeholder="What should they specifically check?">
+    </div>
+  </div>
+  <label id="push-row" title="Once QA/PM (and any custom reviewer) all say APPROVE, push the branch to GitHub and open a draft PR automatically - the same thing the 'Push + open PR' button in History does, just pre-approved before you see the result. Leave unchecked to review it yourself first and push manually.">
+    <input type="checkbox" id="push-checkbox"> auto-push when approved
+  </label>
 </div>
+<div id="submit-msg"></div>
+
+<div id="tabs">
+  <button type="button" class="tab-btn" data-tab="feed">Live <span class="tab-badge" id="live-badge"></span></button>
+  <button type="button" class="tab-btn" data-tab="history">History</button>
+  <button type="button" class="tab-btn" data-tab="queue">24/7 Queue <span class="tab-badge" id="queue-badge"></span></button>
+</div>
+<div id="tab-content">
+  <div id="feed" class="tab-panel"><div id="runs"><div id="feed-empty">Nothing has run yet - submit a task above.</div></div></div>
+  <div id="history" class="tab-panel"><div id="hist-list"><div id="empty">No runs yet.</div></div></div>
+  <div id="queue" class="tab-panel">
+    <div id="daemon-status">checking daemon...</div>
+    <div id="daemon-controls">
+      <select id="daemon-model-select" title="Model used for all three roles (Engineer/QA/PM) when the daemon starts">__MODEL_OPTIONS_RELIABLE__</select>
+      <button type="button" id="daemon-start-btn">Start daemon</button>
+      <button type="button" id="daemon-stop-btn" style="display:none">Stop (after current item)</button>
+      <button type="button" id="daemon-force-stop-btn" style="display:none">Force stop</button>
+    </div>
+    <textarea id="queue-tasks-input" rows="3" placeholder="One task per line - added to the queue for the daemon (chief.py --daemon / daemon-session.sh) to work through, not run by this page."></textarea>
+    <button type="button" id="queue-add-btn">+ Add to queue</button>
+    <div id="queue-msg"></div>
+    <div id="queue-list"><div id="queue-empty">Queue is empty.</div></div>
+  </div>
+</div>
+
 <script>
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// Short, human explanations for status badges (2026-09-12: colors alone
+// don't tell a first-time viewer what NEEDS_HUMAN vs ESCALATED means).
+const STATUS_TOOLTIPS = {
+  APPROVED: 'QA and PM both approved the change.',
+  COMMITTED: 'Committed locally, gate passed, not pushed yet.',
+  PR_OPENED: 'Pushed and a draft PR was opened.',
+  PR_FAILED: 'Push or PR creation failed.',
+  ANSWERED: 'This was a question, not a code change - answered directly, nothing to review.',
+  NEEDS_HUMAN: "Reviewers couldn't approve after 2 attempts - take a look yourself.",
+  ESCALATED: "A reviewer's verdict was unclear rather than a clean approve/request-changes - needs your judgment.",
+  ENGINEER_BLOCKED: 'The engineer itself failed to produce a usable change.',
+  ENGINEER_NO_CHANGES: 'No changes were needed (e.g. already done, or a no-op request).',
+  NO_CHANGES: 'No changes were needed (e.g. already done, or a no-op request).',
+  REVISION_FAILED: 'The one revision attempt itself failed.',
+  REFUSED_DIRTY: 'Refused to start - the working tree already had uncommitted changes.',
+  PENDING: 'Waiting in the queue.',
+  RUNNING: 'Currently being worked on.',
+  FAILED: 'Hit an unexpected error - see the note below.',
+};
+function statusTitle(status) { return STATUS_TOOLTIPS[status] || ''; }
+function statusClass(status) { return 'st-' + (status || 'UNKNOWN'); }
+
 // Templatized reviewer roles (direct user request: "don't ask users to put
 // all the details of what roles agents need... make presets... allow users
 // to create their own team with only a few clicks"). Each preset already
@@ -373,6 +443,45 @@ document.querySelectorAll('.role-chip').forEach(chip => {
   });
 });
 
+// ---- tabs: single-focus view instead of 3 permanently-visible columns
+// (2026-09-12) - all polling below still runs regardless of which tab is
+// active, so switching tabs never loses data, it only changes what's shown. ----
+const TAB_PANELS = ['feed', 'history', 'queue'];
+function setActiveTab(tab) {
+  if (!TAB_PANELS.includes(tab)) tab = 'feed';
+  TAB_PANELS.forEach(t => {
+    document.getElementById(t).classList.toggle('active', t === tab);
+    document.querySelector('.tab-btn[data-tab="' + t + '"]').classList.toggle('active', t === tab);
+  });
+  try { localStorage.setItem('activeTab', tab); } catch (e) {}
+}
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => setActiveTab(btn.dataset.tab));
+});
+let initialTab = 'feed';
+try { initialTab = localStorage.getItem('activeTab') || 'feed'; } catch (e) {}
+setActiveTab(initialTab);
+
+// ---- advanced panel: collapsed by default (2026-09-12) - model pickers
+// + extra reviewers + push are real settings worth deliberately opening
+// for, not something every submission needs to see. ----
+(function initAdvancedToggle() {
+  const panel = document.getElementById('advanced-panel');
+  const btn = document.getElementById('advanced-toggle');
+  let open = false;
+  try { open = localStorage.getItem('advancedOpen') === '1'; } catch (e) {}
+  function apply() {
+    panel.style.display = open ? 'block' : 'none';
+    btn.innerHTML = (open ? '&#9662;' : '&#9656;') + ' Advanced (models, extra reviewers, push)';
+  }
+  apply();
+  btn.addEventListener('click', () => {
+    open = !open;
+    apply();
+    try { localStorage.setItem('advancedOpen', open ? '1' : '0'); } catch (e) {}
+  });
+})();
+
 let offset = 0;
 const runs = {}; // run_id -> { el, roles: { role -> {el, started, ended} } }
 const activeRoles = new Map(); // key -> { role, model }
@@ -384,22 +493,29 @@ function formatElapsed(ms) {
   return m + 'm ' + (s % 60) + 's';
 }
 
+function updateTabBadges() {
+  const liveBadge = document.getElementById('live-badge');
+  liveBadge.textContent = activeRoles.size > 0 ? String(activeRoles.size) : '';
+  liveBadge.style.display = activeRoles.size > 0 ? 'inline-block' : 'none';
+}
+
 function updateBanner() {
-  const banner = document.getElementById('active-banner');
+  const left = document.getElementById('topbar-left');
   const text = document.getElementById('active-text');
   const submitBtn = document.getElementById('submit-btn');
   if (activeRoles.size === 0) {
-    banner.classList.remove('live');
-    text.textContent = 'Idle - nothing running';
+    left.classList.remove('live');
+    text.textContent = 'Idle';
     submitBtn.disabled = false;
-    return;
+  } else {
+    left.classList.add('live');
+    const now = Date.now();
+    const parts = [...activeRoles.values()].map(v =>
+      v.role + ' (' + (v.model || 'unknown model') + ') - ' + formatElapsed(now - v.startedAt));
+    text.textContent = 'Running: ' + parts.join(', ');
+    submitBtn.disabled = true;
   }
-  banner.classList.add('live');
-  const now = Date.now();
-  const parts = [...activeRoles.values()].map(v =>
-    v.role + ' (' + (v.model || 'unknown model') + ') - ' + formatElapsed(now - v.startedAt));
-  text.textContent = 'Running: ' + parts.join(', ');
-  submitBtn.disabled = true;
+  updateTabBadges();
 }
 
 // Ticks every second so elapsed time updates live without waiting on the
@@ -416,6 +532,24 @@ setInterval(() => {
 
 const KNOWN_ROLES = ['Engineer', 'QA', 'PM', 'Assistant'];
 
+function bumpSteps(rec) {
+  rec.stepCount++;
+  const showing = rec.lines.style.display !== 'none';
+  rec.stepsBtn.textContent = (showing ? 'Hide' : 'Show') + ' steps (' + rec.stepCount + ')';
+}
+
+function addLine(rec, text, cls) {
+  const d = document.createElement('div');
+  d.className = 'line' + (cls ? ' ' + cls : '');
+  d.textContent = text;
+  rec.lines.appendChild(d);
+  bumpSteps(rec);
+  // Only a plain-English model reply (no cls) becomes the headline - tool
+  // calls stay tucked behind "steps" (2026-09-12: the live feed used to
+  // lead with raw bash/glob/read lines before anything readable).
+  if (!cls) rec.headline.textContent = text;
+}
+
 function roleBlock(runEl, run_id, role) {
   const key = run_id + ':' + role;
   if (runs[run_id].roles[key]) return runs[run_id].roles[key];
@@ -426,30 +560,37 @@ function roleBlock(runEl, run_id, role) {
   const roleClass = KNOWN_ROLES.includes(role) ? 'role-' + role : 'role-Custom';
   const el = document.createElement('div');
   el.className = 'role-block ' + roleClass;
-  el.innerHTML = '<span class="role-label ' + roleClass + '">' + role + '</span>' +
-                 '<span class="model-tag"></span><span class="timer"></span><div class="lines"></div>';
+  el.innerHTML =
+    '<div class="role-block-head">' +
+      '<span class="role-label ' + roleClass + '">' + escapeHtml(role) + '</span>' +
+      '<span class="model-tag"></span><span class="timer"></span>' +
+      '<button type="button" class="steps-toggle">Show steps (0)</button>' +
+    '</div>' +
+    '<div class="headline"></div>' +
+    '<div class="lines" style="display:none"></div>';
   runEl.appendChild(el);
-  const rec = { el, lines: el.querySelector('.lines'), modelTag: el.querySelector('.model-tag'),
-                timerEl: el.querySelector('.timer'), startedAt: null, ended: false };
+  const rec = { el, lines: el.querySelector('.lines'), headline: el.querySelector('.headline'),
+                modelTag: el.querySelector('.model-tag'), timerEl: el.querySelector('.timer'),
+                stepsBtn: el.querySelector('.steps-toggle'),
+                startedAt: null, ended: false, stepCount: 0 };
+  rec.stepsBtn.addEventListener('click', () => {
+    const showing = rec.lines.style.display !== 'none';
+    rec.lines.style.display = showing ? 'none' : 'block';
+    rec.stepsBtn.textContent = (showing ? 'Show' : 'Hide') + ' steps (' + rec.stepCount + ')';
+  });
   runs[run_id].roles[key] = rec;
   return rec;
 }
 
 function runBlock(run_id) {
   if (runs[run_id]) return runs[run_id];
+  document.getElementById('feed-empty')?.remove();
   const el = document.createElement('div');
   el.className = 'run';
-  el.innerHTML = '<div class="run-head"><span>' + run_id + '</span><span class="round"></span></div>';
+  el.innerHTML = '<div class="run-head"><span>' + escapeHtml(run_id) + '</span><span class="round"></span></div>';
   document.getElementById('runs').prepend(el);
   runs[run_id] = { el, roles: {} };
   return runs[run_id];
-}
-
-function addLine(rec, text, cls) {
-  const d = document.createElement('div');
-  d.className = 'line' + (cls ? ' ' + cls : '');
-  d.textContent = text;
-  rec.lines.appendChild(d);
 }
 
 function applyEvent(e) {
@@ -467,6 +608,7 @@ function applyEvent(e) {
     activeRoles.set(activeKey, { role: e.role, model: e.model, startedAt: rec.startedAt, rec });
     updateBanner();
     addLine(rec, 'task: ' + e.task, 'tool');
+    rec.headline.textContent = 'Working on: ' + String(e.task || '').slice(0, 300);
   } else if (e.kind === 'opencode_event') {
     const ev = e.event || {};
     const part = ev.part || {};
@@ -492,9 +634,11 @@ function applyEvent(e) {
     const elapsed = rec.startedAt ? ' (' + formatElapsed(Date.now() - rec.startedAt) + ')' : '';
     if (rec.timerEl) rec.timerEl.textContent = '';
     const d = document.createElement('div');
-    d.className = 'end-status';
+    d.className = 'line end-status';
     d.textContent = e.role + ' finished: ' + e.status + elapsed;
-    rec.el.appendChild(d);
+    rec.lines.appendChild(d);
+    bumpSteps(rec);
+    rec.headline.textContent = d.textContent;
   }
 }
 
@@ -507,8 +651,6 @@ async function pollEvents() {
   } catch (e) { /* dashboard server may be mid-restart; just retry next tick */ }
   setTimeout(pollEvents, 1000);
 }
-
-function statusClass(status) { return 'st-' + (status || 'UNKNOWN'); }
 
 function isPushEligible(e) {
   // COMMITTED = a plain orchestrator.py run that passed the gate but wasn't
@@ -531,14 +673,24 @@ async function pollHistory() {
       list.innerHTML = data.entries.map(e => {
         const status = (e.chief_report && e.chief_report.status) || e.status || 'UNKNOWN';
         const branch = (e.chief_report && e.chief_report.branch) || e.branch || '';
-        const task = branch || e.task || '';
+        const rawTask = e.task || (e.chief_report && e.chief_report.task) || '';
+        // Task text (human-readable) leads; branch (often a long,
+        // hash-suffixed slug) is secondary/muted, not the other way
+        // around (2026-09-12 - it used to dominate the list visually).
+        // Only show the branch line when it says something the task text
+        // doesn't - otherwise (older log entries with no task text) it's
+        // the same string shown twice.
+        const taskText = rawTask || branch || '(no description)';
+        const showBranchLine = branch && branch !== taskText;
         const pushBtn = isPushEligible(e)
-          ? '<button class="push-btn" data-branch="' + branch + '" data-task="' +
-            (e.task || '').replace(/"/g, '&quot;') + '">Push + open PR</button>'
+          ? '<button class="push-btn" data-branch="' + escapeHtml(branch) + '" data-task="' +
+            escapeHtml(rawTask) + '">Push + open PR</button>'
           : '';
-        return '<div class="hist-item"><span class="hist-status ' + statusClass(status) + '">' + status + '</span>' +
-               '<div class="hist-task">' + task + '</div>' +
-               '<div class="hist-time">' + (e.timestamp || '') + '</div>' + pushBtn + '</div>';
+        return '<div class="hist-item">' +
+               '<span class="hist-status ' + statusClass(status) + '" title="' + escapeHtml(statusTitle(status)) + '">' + escapeHtml(status) + '</span>' +
+               '<div class="hist-task">' + escapeHtml(taskText) + '</div>' +
+               (showBranchLine ? '<div class="hist-branch">' + escapeHtml(branch) + '</div>' : '') +
+               '<div class="hist-time">' + escapeHtml(e.timestamp || '') + '</div>' + pushBtn + '</div>';
       }).join('');
     }
   } catch (e) { /* retry next tick */ }
@@ -552,20 +704,31 @@ async function pollHistory() {
 // .agent-queue files and the daemon's heartbeat file, and can add new
 // tasks to the queue, but never runs the queue itself.
 function daemonStatusText(daemon) {
-  if (!daemon || !daemon.alive) return 'Daemon: not running. Start it with ./daemon-session.sh <repo>.';
+  if (!daemon || !daemon.alive) return 'Daemon: not running. Start it below, or from a terminal with ./daemon-session.sh <repo>.';
   if (daemon.state === 'working') return 'Daemon: running - working on: ' + (daemon.current_task || '?');
   if (daemon.state === 'idle') return 'Daemon: running - idle, watching for new tasks.';
   if (daemon.state === 'stopped') return 'Daemon: stopped' + (daemon.error ? ' (' + daemon.error + ')' : '') + '.';
   return 'Daemon: running.';
+}
+function daemonPillText(daemon) {
+  if (!daemon || !daemon.alive) return 'Daemon: off';
+  if (daemon.state === 'working') return 'Daemon: working';
+  if (daemon.state === 'idle') return 'Daemon: idle';
+  return 'Daemon: ' + (daemon.state || 'on');
 }
 
 async function pollQueue() {
   try {
     const res = await fetch('/api/queue');
     const data = await res.json();
+    const alive = !!(data.daemon && data.daemon.alive);
+
+    const pill = document.getElementById('daemon-pill');
+    pill.textContent = daemonPillText(data.daemon);
+    pill.className = alive ? 'alive' : '';
+
     const statusEl = document.getElementById('daemon-status');
     statusEl.textContent = daemonStatusText(data.daemon);
-    const alive = !!(data.daemon && data.daemon.alive);
     statusEl.className = alive ? 'alive' : 'stale';
     document.getElementById('daemon-model-select').style.display = alive ? 'none' : 'inline-block';
     document.getElementById('daemon-start-btn').style.display = alive ? 'none' : 'inline-block';
@@ -573,16 +736,21 @@ async function pollQueue() {
     document.getElementById('daemon-force-stop-btn').style.display = alive ? 'inline-block' : 'none';
 
     const list = document.getElementById('queue-list');
-    if (!data.entries || data.entries.length === 0) {
+    const entries = data.entries || [];
+    if (entries.length === 0) {
       list.innerHTML = '<div id="queue-empty">Queue is empty.</div>';
     } else {
-      list.innerHTML = data.entries.map(e => {
+      list.innerHTML = entries.map(e => {
         const badge = e.result || (e.status || 'UNKNOWN').toUpperCase();
-        const extra = e.error ? ' - ' + e.error : '';
-        return '<div class="queue-item"><span class="hist-status ' + statusClass(badge) + '">' + badge + '</span>' +
-               '<div class="queue-task">' + (e.task || '') + extra + '</div></div>';
+        const extra = e.error ? ' - ' + escapeHtml(e.error) : '';
+        return '<div class="queue-item"><span class="queue-status ' + statusClass(badge) + '" title="' + escapeHtml(statusTitle(badge)) + '">' + escapeHtml(badge) + '</span>' +
+               '<div class="queue-task">' + escapeHtml(e.task || '') + extra + '</div></div>';
       }).join('');
     }
+    const attention = entries.filter(e => ['pending', 'running', 'needs_human'].includes(e.status)).length;
+    const qBadge = document.getElementById('queue-badge');
+    qBadge.textContent = attention > 0 ? String(attention) : '';
+    qBadge.style.display = attention > 0 ? 'inline-block' : 'none';
   } catch (e) { /* retry next tick */ }
   setTimeout(pollQueue, 3000);
 }
@@ -645,7 +813,7 @@ document.getElementById('mode-select').addEventListener('change', () => {
   const mode = document.getElementById('mode-select').value;
   document.getElementById('model-agent').style.display = mode === 'agent' ? 'flex' : 'none';
   document.getElementById('model-chief').style.display = mode === 'chief' ? 'flex' : 'none';
-  document.getElementById('custom-role-bar').style.display = mode === 'chief' ? 'flex' : 'none';
+  document.getElementById('custom-role-bar').style.display = mode === 'chief' ? 'block' : 'none';
 });
 
 const goalInput = document.getElementById('goal-input');
@@ -696,6 +864,7 @@ document.getElementById('submit-btn').addEventListener('click', async () => {
     if (!res.ok) { showMsg('Error: ' + (data.error || res.status), 'err'); document.getElementById('submit-btn').disabled = false; return; }
     showMsg('Started: ' + goal, 'ok');
     document.getElementById('goal-input').value = '';
+    setActiveTab('feed');
   } catch (e) {
     showMsg('Request failed: ' + e, 'err');
     document.getElementById('submit-btn').disabled = false;
@@ -715,52 +884,13 @@ document.getElementById('hist-list').addEventListener('click', async (ev) => {
     const data = await res.json();
     if (!res.ok) { showMsg('Push error: ' + (data.error || res.status), 'err'); btn.disabled = false; btn.textContent = 'Push + open PR'; return; }
     showMsg('Push started for ' + btn.dataset.branch, 'ok');
-    btn.textContent = 'Pushing (watch live feed)...';
+    btn.textContent = 'Pushing (watch Live tab)...';
   } catch (e) {
     showMsg('Push request failed: ' + e, 'err');
     btn.disabled = false;
     btn.textContent = 'Push + open PR';
   }
 });
-
-// Collapsible history panel (direct user request - "doesn't add a lot of
-// value, user might want to hide it"). Persisted per-browser via
-// localStorage so the choice survives a reload; wrapped in try/catch since
-// storage access can throw in some contexts (private windows etc.) and
-// this is a pure convenience, never worth breaking the page over.
-(function initHistoryToggle() {
-  const historyEl = document.getElementById('history');
-  const arrow = document.getElementById('history-arrow');
-  let collapsed = false;
-  try { collapsed = localStorage.getItem('historyCollapsed') === '1'; } catch (e) {}
-  function apply() {
-    historyEl.classList.toggle('collapsed', collapsed);
-    arrow.textContent = collapsed ? '▸' : '▾';
-  }
-  apply();
-  document.getElementById('history-toggle').addEventListener('click', () => {
-    collapsed = !collapsed;
-    apply();
-    try { localStorage.setItem('historyCollapsed', collapsed ? '1' : '0'); } catch (e) {}
-  });
-})();
-
-(function initQueueToggle() {
-  const queueEl = document.getElementById('queue');
-  const arrow = document.getElementById('queue-arrow');
-  let collapsed = false;
-  try { collapsed = localStorage.getItem('queueCollapsed') === '1'; } catch (e) {}
-  function apply() {
-    queueEl.classList.toggle('collapsed', collapsed);
-    arrow.textContent = collapsed ? '▸' : '▾';
-  }
-  apply();
-  document.getElementById('queue-toggle').addEventListener('click', () => {
-    collapsed = !collapsed;
-    apply();
-    try { localStorage.setItem('queueCollapsed', collapsed ? '1' : '0'); } catch (e) {}
-  });
-})();
 
 // Create/switch workspace (direct user request - "allow user to create a
 // new workspace, to start from scratch," then a follow-up: "don't ask
@@ -799,7 +929,7 @@ async function loadWorkspaceOptions() {
     const res = await fetch('/api/workspaces');
     const data = await res.json();
     if (!data.options || data.options.length === 0) {
-      container.innerHTML = '<span id="workspace-empty">no other project found in ' + data.base_dir + '</span>';
+      container.innerHTML = '<span id="workspace-empty">no other project found in ' + escapeHtml(data.base_dir) + '</span>';
       return;
     }
     container.innerHTML = '';
@@ -840,6 +970,7 @@ document.getElementById('workspace-new-btn').addEventListener('click', async () 
   }
 });
 
+updateBanner();
 pollEvents();
 pollHistory();
 pollQueue();

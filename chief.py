@@ -226,7 +226,7 @@ def run_council(repo: Path, goal: str, model: str = MODEL_INTERACTIVE, push: boo
         print(f"\n=== Chief synthesis: ANSWERED - routed as a question, not a "
               f"code change. Nothing to review (QA/PM review diffs; there is "
               f"no diff). ===")
-        report = {"status": "ANSWERED", "engineer": eng_result}
+        report = {"status": "ANSWERED", "engineer": eng_result, "task": goal}
         append_log(repo, {"chief_report": report})
         return report
 
@@ -280,7 +280,7 @@ def run_council(repo: Path, goal: str, model: str = MODEL_INTERACTIVE, push: boo
             print(f"\n=== Chief synthesis: APPROVED after {attempt} round(s) "
                   f"(Engineer commit {eng_result.get('commit', '?')[:8]} on {branch}) ===")
             report = {
-                "status": "APPROVED", "branch": branch, "rounds": attempt,
+                "status": "APPROVED", "branch": branch, "rounds": attempt, "task": goal,
                 "engineer": eng_result, "qa": qa_verdict, "pm": pm_verdict,
                 "extra_reviewers": {name: v for name, v in extra_verdicts},
             }
@@ -300,7 +300,7 @@ def run_council(repo: Path, goal: str, model: str = MODEL_INTERACTIVE, push: boo
             print(f"\n=== Chief synthesis: ESCALATING to human - a reviewer's "
                   f"verdict was unclear rather than a clean APPROVE/REQUEST_CHANGES. ===")
             report = {
-                "status": "ESCALATED", "branch": branch, "rounds": attempt,
+                "status": "ESCALATED", "branch": branch, "rounds": attempt, "task": goal,
                 "engineer": eng_result, "qa": qa_verdict, "pm": pm_verdict,
                 "extra_reviewers": {name: v for name, v in extra_verdicts},
             }
@@ -312,7 +312,7 @@ def run_council(repo: Path, goal: str, model: str = MODEL_INTERACTIVE, push: boo
                   f"not looping further (over-orchestration risk). Branch {branch} left "
                   f"as-is for manual review. ===")
             report = {
-                "status": "NEEDS_HUMAN", "branch": branch, "rounds": attempt,
+                "status": "NEEDS_HUMAN", "branch": branch, "rounds": attempt, "task": goal,
                 "engineer": eng_result, "qa": qa_verdict, "pm": pm_verdict,
                 "extra_reviewers": {name: v for name, v in extra_verdicts},
             }
